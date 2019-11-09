@@ -1,5 +1,6 @@
-# a_quant_factor
-这是一个有关A股量化因子研究的项目
+# A quantization factor
+这是一个有关A股量化因子研究的项目  
+**忙碌开发中，敬请期待**
 
 ## 主要内容
 
