@@ -105,3 +105,9 @@ venv.bak/
 
 # configuratiron
 config.py
+
+# database
+.db
+
+# executable file
+.exe
