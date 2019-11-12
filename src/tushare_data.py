@@ -7,7 +7,7 @@ import sqlite3
 import tushare as ts
 import pandas as pd
 
-import config   # 参考example.config.py, 码友可自行撰写config.py
+from src import config
 
 Download_Result = Tuple[pd.DataFrame, int]
 
@@ -20,7 +20,7 @@ def download_list_companies() -> Download_Result:
 
 
 def persist_list_companies_to_db(list_companies: List):
-    conn = sqlite3.connect('example.db')
+    conn = sqlite3.connect('..\data\example.db')
     c = conn.cursor()
 
     # Create table
