@@ -27,7 +27,7 @@ def persist_list_companies_to_db(list_companies: List):
     c.execute('''CREATE TABLE IF NOT EXISTS \
      list (代码 text, 名称 text, 地域 text, 行业 text, 上市日期 text, 退市日期 text)''')
 
-    # Insert a row of data
+    # Insert list data
     c.executemany('INSERT INTO list VALUES (?,?,?,?,?,?)', list_companies)
 
     # Save (commit) the changes
@@ -40,6 +40,11 @@ def persist_list_companies_to_db(list_companies: List):
 
 def transfer_list_companies(list_companies: pd.DataFrame) -> List:
     return list_companies[0].values.tolist()
+
+
+def get_process_tushare_list() -> bool:
+    persist_list_companies_to_db(transfer_list_companies(download_list_companies()))
+    return True
 
 
 if __name__ == '__main__':
