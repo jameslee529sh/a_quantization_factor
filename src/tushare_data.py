@@ -20,11 +20,12 @@ def download_list_companies() -> Download_Result:
 
 
 def persist_list_companies_to_db(list_companies: List):
-    conn = sqlite3.connect('..\data\example.db')
+    conn = sqlite3.connect('..\\data\\a_data.db')
     c = conn.cursor()
 
     # Create table
-    c.execute('''CREATE TABLE list (代码 text, 名称 text, 地域 text, 行业 text, 上市日期 text, 退市日期 text)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS \
+     list (代码 text, 名称 text, 地域 text, 行业 text, 上市日期 text, 退市日期 text)''')
 
     # Insert a row of data
     c.executemany('INSERT INTO list VALUES (?,?,?,?,?,?)', list_companies)
