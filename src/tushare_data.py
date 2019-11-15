@@ -1,6 +1,6 @@
 """ 下载tushare提供的股票数据
 """
-from typing import List, Any, Text, NamedTuple, Tuple, Iterator
+from typing import List, Any, Text, NamedTuple, Tuple, Optional
 from functools import reduce
 import sqlite3
 from collections import namedtuple
@@ -65,12 +65,12 @@ def create_sqlite_table(table_name: Text, column_def: Text) -> Any:
     conn.close()
 
 
-def get_extreme_value_in_db(table_name: Text, field_name: Text, ts_code: Text) -> Tuple:
+def get_extreme_value_in_db(table_name: Text, field_name: Text, code: Text) -> Tuple:
     trading_date_range: Tuple = (None,)
     conn = sqlite3.connect(db_config().db_path)
     c = conn.cursor()
     try:
-        c.execute(f"SELECT MAX({field_name}), MIN({field_name}) FROM {table_name} WHERE 股票代码='{ts_code}'")
+        c.execute(f"SELECT MAX({field_name}), MIN({field_name}) FROM {table_name} WHERE 股票代码='{code}'")
         trading_date_range = c.fetchone()
     except sqlite3.Error as e:
         print(e)
@@ -80,22 +80,58 @@ def get_extreme_value_in_db(table_name: Text, field_name: Text, ts_code: Text) -
     return trading_date_range
 
 
-def create_daily_trading_data_task(ts_code: Text) -> Tuple:
-    trading_date_range: Tuple = get_extreme_value_in_db(db_config().tbl_daily_trading_data, '交易日期', ts_code)
-    task: Tuple = (ts_code, sampling_config().start_date, sampling_config().end_date)
+def create_daily_trading_data_task(code: Text) -> Optional[Tuple]:
+    trading_date_range: Tuple = get_extreme_value_in_db(db_config().tbl_daily_trading_data, '交易日期', code)
+    task: Optional[Tuple] = None
+
+    # ToDo: 还需要考虑各种情况，例如，config和db中不一致
     if trading_date_range == (None, None):
-        task = (ts_code, sampling_config().start_date, sampling_config().end_date)
+        task = (code, sampling_config().start_date, sampling_config().end_date)
     return task
 
 
-def get_tushare_data(task: Tuple, category: Text='') -> pd.DataFrame:
+def get_tushare_data(task: Optional[Tuple]) -> Optional[pd.DataFrame]:
     return ts.pro_bar(ts_code=task[0], api=ts.pro_api(config.tushare_token), start_date=task[1], end_date=task[2],
-                      adj='qfq', factors=['tor', 'vr'], adjfactor=True)
+                      adj='qfq', factors=['tor', 'vr'], adjfactor=True) if task is not None else None
+
+
+# drop some columns
+def clean_daily_trading_data(data: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    return data.drop(['pre_close', 'change', 'pct_chg'], axis=1) if data is not None else None
+
+
+# reindex dataframe and transfer dataframe to list
+def transfer_daily_trading_data(data: Optional[pd.DataFrame]) -> Optional[List]:
+    temp = data.reindex(columns=['code', 'trade_date', 'open', 'high', 'low', 'close', 'vol', 'amount',
+                                 'turnover_rate', 'volume_ratio', 'adj_factor']) if data is not None else None
+    return temp.values.tolist() if temp is not None else None
+
+
+def persist_daily_trading_data(data: List) -> Any:
+    if data is None:
+        return
+    conn = sqlite3.connect(db_config().db_path)
+    c = conn.cursor()
+
+    # Insert list data
+    c.executemany(f'INSERT INTO {db_config().tbl_daily_trading_data} VALUES (?,?,?,?,?,?,?,?,?,?,?)', data)
+
+    # Save (commit) the changes
+    conn.commit()
+
+    # We can also close the connection if we are done with it.
+    # Just be sure any changes have been committed or they will be lost.
+    c.close()
+    conn.close()
 
 
 # get, clean, transfer and persist data ==> gctp
-def gctp_daily_trading_data(ts_code: Text) -> Any:
-    return get_tushare_data(create_daily_trading_data_task(ts_code))
+def gctp_daily_trading_data(code: Text) -> Any:
+    return persist_daily_trading_data(
+        transfer_daily_trading_data(
+            clean_daily_trading_data(
+                get_tushare_data(
+                    create_daily_trading_data_task(code)))))
 
 
 if __name__ == '__main__':
@@ -108,8 +144,12 @@ if __name__ == '__main__':
                         最低价 NOT NULL,
                         收盘价 NOT NULL,
                         成交量 NOT NULL,
-                        成交额 NOT NULL""")
+                        成交额 NOT NULL,
+                        换手率 NOT NULL,
+                        量比,
+                        复权因子 NOT NULL,
+                        PRIMARY KEY (股票代码, 交易日期)""")
     tscode_list: List[Text] = [record[0] for record in download_list_companies().values.tolist()]
-    daily_trading_data_iter = (gctp_daily_trading_data(ts_code) for ts_code in tscode_list)
-    print(next(daily_trading_data_iter))
 
+    for ts_code in tscode_list:
+        gctp_daily_trading_data(ts_code)
