@@ -1,9 +1,11 @@
 """ 下载tushare提供的股票数据
 """
-from typing import List, Any, Text, NamedTuple, Tuple, Optional, Callable, Iterator
+from typing import List, Any, Text, NamedTuple, Tuple, Optional, Callable, Iterator, Dict
 from functools import reduce
 import sqlite3
 from collections import namedtuple
+from functools import partial
+import time
 
 import tushare as ts
 import pandas as pd
@@ -11,7 +13,7 @@ import pandas as pd
 from src import config
 
 Sampling_config: NamedTuple = namedtuple('sampling_config', 'start_date, end_date')
-DB_config: NamedTuple = namedtuple('db_config', 'db_path, tbl_daily_trading_data')
+DB_config: NamedTuple = namedtuple('db_config', 'db_path, tbl_daily_trading_data, tbl_balance_sheet')
 
 
 def sampling_config() -> Sampling_config:
@@ -19,7 +21,9 @@ def sampling_config() -> Sampling_config:
 
 
 def db_config() -> DB_config:
-    return DB_config(db_path='..\\data\\a_data.db', tbl_daily_trading_data='daily_trading_data')
+    return DB_config(db_path='..\\data\\a_data.db',
+                     tbl_daily_trading_data='daily_trading_data',
+                     tbl_balance_sheet='balance_sheet')
 
 
 def download_list_companies() -> pd.DataFrame:
@@ -70,7 +74,7 @@ def get_extreme_value_in_db(table_name: Text, field_name: Text, code: Text) -> T
     conn = sqlite3.connect(db_config().db_path)
     c = conn.cursor()
     try:
-        c.execute(f"SELECT MAX({field_name}), MIN({field_name}) FROM {table_name} WHERE 股票代码='{code}'")
+        c.execute(f"SELECT MIN({field_name}), MAX({field_name}) FROM {table_name} WHERE 股票代码='{code}'")
         trading_date_range = c.fetchone()
     except sqlite3.Error as e:
         print(e)
@@ -134,9 +138,72 @@ def gctp_daily_trading_data(code: Text) -> Any:
                     create_daily_trading_data_task(code)))))
 
 
+def create_gctp_task(code: Text, tbl_name: Text) -> Optional[Tuple]:
+    task: Optional[Tuple] = None
+    tbl_field: Dict = {db_config().tbl_balance_sheet: ('报告期',), }
+    trading_date_range: Tuple = get_extreme_value_in_db(tbl_name, tbl_field[tbl_name][0], code)
+
+    # ToDo: 还需要考虑各种情况，例如，config和db中不一致
+    if trading_date_range == (None, None):
+        task = (tbl_name, code, sampling_config().start_date, sampling_config().end_date)
+    return task
+
+
+def get_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
+    if task is None:
+        return None
+    get_balance_sheet = lambda: ts.pro_api(config.tushare_token).balancesheet(ts_code=task[1],
+                                                                              start_date=task[2], end_date=task[3])
+    tbl_tushare = {db_config().tbl_balance_sheet: get_balance_sheet, }
+
+    return tbl_tushare[task[0]]()
+
+
+def clean_balance_sheet(data: pd.DataFrame) -> pd.DataFrame:
+    temp = data.drop_duplicates(['end_date'], keep='first')
+    return temp.drop(['ann_date'], axis=1)
+
+
+def transfer_balance_sheet(data: pd.DataFrame) -> List:
+    temp = data.set_index(['ts_code', 'end_date']).reset_index()
+    return temp.values.tolist()
+
+
+def persist_data(data: List, tbl_name: Text) -> Any:
+    conn = sqlite3.connect(db_config().db_path)
+    c = conn.cursor()
+
+    # Insert list data
+    insert_txt: Text = f'INSERT INTO {tbl_name} VALUES ({"?," * 135 + "?"})'
+    c.executemany(insert_txt, data)
+
+    # Save (commit) the changes
+    conn.commit()
+
+    # We can also close the connection if we are done with it.
+    # Just be sure any changes have been committed or they will be lost.
+    c.close()
+    conn.close()
+    return True
+
+
 # get, clean, transfer and persist data, gctp
-def gctp(code: Text, create_task: Callable[[Text], NamedTuple]) -> Any:
-    return create_task(code)
+def gctp(code: Text, tbl_name: Text,
+         clean_data: Callable[[pd.DataFrame], pd.DataFrame],
+         transfer_data: Callable[[pd.DataFrame], List]) -> Optional[bool]:
+    data = get_data_from_tushare(create_gctp_task(code, tbl_name))
+    return persist_data(transfer_data(clean_data(data)), tbl_name) if data is not None and data.empty is False \
+        else None
+
+
+def limit_access(access_per_minute: int, code: Text, gctp_func: Callable[[Text], Optional[bool]]) -> Any:
+    start = time.time()
+    rtn = gctp_func(code)
+    end = time.time()
+    lapse = end - start
+    min_lapse = 60 / access_per_minute
+    if rtn is not None and lapse <= min_lapse:
+        time.sleep(min_lapse - lapse + 0.015)
 
 
 if __name__ == '__main__':
@@ -155,12 +222,12 @@ if __name__ == '__main__':
                         复权因子 NOT NULL,
                         PRIMARY KEY (股票代码, 交易日期)""")
 
-    create_sqlite_table('balance_sheet',
+    create_sqlite_table(db_config().tbl_balance_sheet,
                         """股票代码 NOT NULL, 
                         报告期 NOT NULL,
                         实际公告日期 NOT NULL,
                         报表类型 NOT NULL,
-                        公司类型 NOT NULL,
+                        公司类型,
                         期末总股本,
                         资本公积金,
                         未分配利润,
@@ -296,5 +363,9 @@ if __name__ == '__main__':
 
     tscode_iter: Iterator[Text] = (record[0] for record in download_list_companies().values.tolist())
 
-    # for ts_code in tscode_iter:
-    #     gctp_daily_trading_data(ts_code)
+    gctp_balance_sheet: Callable[[Text], Optional[bool]] = partial(gctp, tbl_name=db_config().tbl_balance_sheet,
+                                 clean_data=clean_balance_sheet, transfer_data=transfer_balance_sheet)
+
+    for ts_code in tscode_iter:
+        #     gctp_daily_trading_data(ts_code)
+        limit_access(80, ts_code, gctp_balance_sheet)
