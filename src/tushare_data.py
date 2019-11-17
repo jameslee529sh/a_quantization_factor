@@ -13,7 +13,8 @@ import pandas as pd
 from src import config
 
 Sampling_config: NamedTuple = namedtuple('sampling_config', 'start_date, end_date')
-DB_config: NamedTuple = namedtuple('db_config', 'db_path, tbl_daily_trading_data, tbl_balance_sheet')
+DB_config: NamedTuple = namedtuple('db_config', 'db_path, tbl_daily_trading_data, tbl_balance_sheet, \
+                                                tbl_income_statement, tbl_cash_flow_statement')
 
 
 def sampling_config() -> Sampling_config:
@@ -23,7 +24,9 @@ def sampling_config() -> Sampling_config:
 def db_config() -> DB_config:
     return DB_config(db_path='..\\data\\a_data.db',
                      tbl_daily_trading_data='daily_trading_data',
-                     tbl_balance_sheet='balance_sheet')
+                     tbl_balance_sheet='balance_sheet',
+                     tbl_income_statement='income_statement',
+                     tbl_cash_flow_statement='cash_flow_statement')
 
 
 def download_list_companies() -> pd.DataFrame:
@@ -140,8 +143,7 @@ def gctp_daily_trading_data(code: Text) -> Any:
 
 def create_gctp_task(code: Text, tbl_name: Text) -> Optional[Tuple]:
     task: Optional[Tuple] = None
-    tbl_field: Dict = {db_config().tbl_balance_sheet: ('报告期',), }
-    trading_date_range: Tuple = get_extreme_value_in_db(tbl_name, tbl_field[tbl_name][0], code)
+    trading_date_range: Tuple = get_extreme_value_in_db(tbl_name, '报告期', code)
 
     # ToDo: 还需要考虑各种情况，例如，config和db中不一致
     if trading_date_range == (None, None):
@@ -154,17 +156,20 @@ def get_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
         return None
     get_balance_sheet = lambda: ts.pro_api(config.tushare_token).balancesheet(ts_code=task[1],
                                                                               start_date=task[2], end_date=task[3])
-    tbl_tushare = {db_config().tbl_balance_sheet: get_balance_sheet, }
+    get_income_statement = lambda: ts.pro_api(config.tushare_token).income(ts_code=task[1],
+                                                                           start_date=task[2], end_date=task[3])
+    tbl_tushare = {db_config().tbl_balance_sheet: get_balance_sheet,
+                   db_config().tbl_income_statement: get_income_statement}
 
     return tbl_tushare[task[0]]()
 
 
-def clean_balance_sheet(data: pd.DataFrame) -> pd.DataFrame:
+def clean_statement(data: pd.DataFrame) -> pd.DataFrame:
     temp = data.drop_duplicates(['end_date'], keep='first')
     return temp.drop(['ann_date'], axis=1)
 
 
-def transfer_balance_sheet(data: pd.DataFrame) -> List:
+def transfer_statement(data: pd.DataFrame) -> List:
     temp = data.set_index(['ts_code', 'end_date']).reset_index()
     return temp.values.tolist()
 
@@ -174,7 +179,8 @@ def persist_data(data: List, tbl_name: Text) -> Any:
     c = conn.cursor()
 
     # Insert list data
-    insert_txt: Text = f'INSERT INTO {tbl_name} VALUES ({"?," * 135 + "?"})'
+    field_num: Dict = {db_config().tbl_balance_sheet: 136, db_config().tbl_income_statement:64}
+    insert_txt: Text = f'INSERT INTO {tbl_name} VALUES ({"?," * (field_num[tbl_name] - 1) + "?"})'
     c.executemany(insert_txt, data)
 
     # Save (commit) the changes
@@ -206,8 +212,7 @@ def limit_access(access_per_minute: int, code: Text, gctp_func: Callable[[Text],
         time.sleep(min_lapse - lapse + 0.015)
 
 
-if __name__ == '__main__':
-    # persist_list_companies_to_db(transfer_list_companies(download_list_companies()))
+def create_tables() -> None:
     create_sqlite_table('daily_trading_data',
                         """股票代码 NOT NULL, 
                         交易日期 NOT NULL, 
@@ -361,11 +366,178 @@ if __name__ == '__main__':
                         持有待售的负债,
                         PRIMARY KEY (股票代码, 报告期)""")
 
+    create_sqlite_table(db_config().tbl_income_statement,
+                        """股票代码 NOT NULL,
+                        报告期 NOT NULL,
+                        实际公告日期 NOT NULL,
+                        报告类型 NOT NULL,
+                        公司类型,
+                        基本每股收益,
+                        稀释每股收益,
+                        营业总收入,
+                        营业收入,
+                        利息收入,
+                        已赚保费,
+                        手续费及佣金收入,
+                        手续费及佣金净收入,
+                        其他经营净收益,
+                        加：其他业务净收益,
+                        保险业务收入,
+                        减：分出保费,
+                        提取未到期责任准备金,
+                        其中：分保费收入,
+                        代理买卖证券业务净收入,
+                        证券承销业务净收入,
+                        受托客户资产管理业务净收入,
+                        其他业务收入,
+                        加：公允价值变动净收益,
+                        加：投资净收益,
+                        其中：对联营企业和合营企业的投资收益,
+                        加：汇兑净收益,
+                        营业总成本,
+                        减：营业成本,
+                        减：利息支出,
+                        减：手续费及佣金支出,
+                        减：营业税金及附加,
+                        减：销售费用,
+                        减：管理费用,
+                        减：财务费用,
+                        减：资产减值损失,
+                        退保金,
+                        赔付总支出,
+                        提取保险责任准备金,
+                        保户红利支出,
+                        分保费用,
+                        营业支出,
+                        减：摊回赔付支出,
+                        减：摊回保险责任准备金,
+                        减：摊回分保费用,
+                        其他业务成本,
+                        营业利润,
+                        加：营业外收入,
+                        减：营业外支出,
+                        其中：减：非流动资产处置净损失,
+                        利润总额,
+                        所得税费用,
+                        净利润（含少数股东损益）,
+                        净利润（不含少数股东损益）,
+                        少数股东损益,
+                        其他综合收益,
+                        综合收益总额,
+                        归属于母公司（或股东）的综合收益总额,
+                        归属于少数股东的综合收益总额,
+                        息税前利润,
+                        息税折旧摊销前利润,
+                        保险业务支出,
+                        年初未分配利润,
+                        可分配利润,
+                        PRIMARY KEY (股票代码, 报告期)""")
+
+    # tables: Dict = {db_config().tbl_cash_flow_statement: """
+    #                                                     股票代码 NOT NULL,
+    #                                                     报告期 NOT NULL,
+    #                                                     实际公告日期,
+    #                                                     公司类型,
+    #                                                     报表类型,
+    #                                                     净利润,
+    #                                                     财务费用,
+    #                                                     销售商品、提供劳务收到的现金,
+    #                                                     收到的税费返还,
+    #                                                     客户存款和同业存放款项净增加额,
+    #                                                     向中央银行借款净增加额,
+    #                                                     向其他金融机构拆入资金净增加额,
+    #                                                     收到原保险合同保费取得的现金,
+    #                                                     保户储金净增加额,
+    #                                                     收到再保业务现金净额,
+    #                                                     处置交易性金融资产净增加额,
+    #                                                     收取利息和手续费净增加额,
+    #                                                     处置可供出售金融资产净增加额,
+    #                                                     拆入资金净增加额,
+    #                                                     回购业务资金净增加额,
+    #                                                     收到其他与经营活动有关的现金,
+    #                                                     经营活动现金流入小计,
+    #                                                     购买商品、接受劳务支付的现金,
+    #                                                     支付给职工以及为职工支付的现金,
+    #                                                     支付的各项税费,
+    #                                                     客户贷款及垫款净增加额,
+    #                                                     存放央行和同业款项净增加额,
+    #                                                     支付原保险合同赔付款项的现金,
+    #                                                     支付手续费的现金,
+    #                                                     支付保单红利的现金,
+    #                                                     支付其他与经营活动有关的现金,
+    #                                                     经营活动现金流出小计,
+    #                                                     经营活动产生的现金流量净额,
+    #                                                     收到其他与投资活动有关的现金,
+    #                                                     收回投资收到的现金,
+    #                                                     取得投资收益收到的现金,
+    #                                                     处置固定资产、无形资产和其他长期资产收回的现金净额,
+    #                                                     处置子公司及其他营业单位收到的现金净额,
+    #                                                     投资活动现金流入小计,
+    #                                                     购建固定资产、无形资产和其他长期资产支付的现金,
+    #                                                     投资支付的现金,
+    #                                                     取得子公司及其他营业单位支付的现金净额,
+    #                                                     支付其他与投资活动有关的现金,
+    #                                                     质押贷款净增加额,
+    #                                                     投资活动现金流出小计,
+    #                                                     投资活动产生的现金流量净额,
+    #                                                     取得借款收到的现金,
+    #                                                     发行债券收到的现金,
+    #                                                     收到其他与筹资活动有关的现金,
+    #                                                     筹资活动现金流入小计,
+    #                                                     企业自由现金流量,
+    #                                                     偿还债务支付的现金,
+    #                                                     分配股利、利润或偿付利息支付的现金,
+    #                                                     其中:子公司支付给少数股东的股利、利润,
+    #                                                     支付其他与筹资活动有关的现金,
+    #                                                     筹资活动现金流出小计,
+    #                                                     筹资活动产生的现金流量净额,
+    #                                                     汇率变动对现金的影响,
+    #                                                     现金及现金等价物净增加额,
+    #                                                     期初现金及现金等价物余额,
+    #                                                     期末现金及现金等价物余额,
+    #                                                     吸收投资收到的现金,
+    #                                                     其中:子公司吸收少数股东投资收到的现金,
+    #                                                     未确认投资损失,
+    #                                                     加:资产减值准备,
+    #                                                     固定资产折旧、油气资产折耗、生产性生物资产折旧,
+    #                                                     无形资产摊销,
+    #                                                     长期待摊费用摊销,
+    #                                                     待摊费用减少,
+    #                                                     预提费用增加,
+    #                                                     处置固定、无形资产和其他长期资产的损失,
+    #                                                     固定资产报废损失,
+    #                                                     公允价值变动损失,
+    #                                                     投资损失,
+    #                                                     递延所得税资产减少,
+    #                                                     递延所得税负债增加,
+    #                                                     存货的减少,
+    #                                                     经营性应收项目的减少,
+    #                                                     经营性应付项目的增加,
+    #                                                     经营活动产生的现金流量净额（间接法）,
+    #                                                     债务转为资本,
+    #                                                     一年内到期的可转换公司债券,
+    #                                                     融资租入固定资产,
+    #                                                     现金的期末余额,
+    #                                                     减：现金的期初余额,
+    #                                                     加：现金等价物的期末余额,
+    #                                                     减：现金等价物的期初余额,
+    #                                                     现金及现金等价物净增加额（间接法）""", }
+    # [create_sqlite_table(tbl_name, tables[tbl_name]) for tbl_name in tables.keys()]
+
+
+if __name__ == '__main__':
+    create_tables()
+
+    # persist_list_companies_to_db(transfer_list_companies(download_list_companies()))
     tscode_iter: Iterator[Text] = (record[0] for record in download_list_companies().values.tolist())
 
-    gctp_balance_sheet: Callable[[Text], Optional[bool]] = partial(gctp, tbl_name=db_config().tbl_balance_sheet,
-                                 clean_data=clean_balance_sheet, transfer_data=transfer_balance_sheet)
+    gctp_balance_sheet = partial(gctp, tbl_name=db_config().tbl_balance_sheet,
+                                 clean_data=clean_statement, transfer_data=transfer_statement)
+
+    gctp_income_statement = partial(gctp, tbl_name=db_config().tbl_income_statement,
+                                    clean_data=clean_statement, transfer_data=transfer_statement)
 
     for ts_code in tscode_iter:
-        #     gctp_daily_trading_data(ts_code)
-        limit_access(80, ts_code, gctp_balance_sheet)
+        # gctp_daily_trading_data(ts_code)
+        # limit_access(80, ts_code, gctp_balance_sheet)
+        limit_access(78, ts_code, gctp_income_statement)
