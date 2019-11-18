@@ -178,7 +178,9 @@ def imp_get_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
 
     ts.set_token(config.tushare_token)
     func: Dict = {db_config().tbl_finance_indicator_statement: ts.pro_api().fina_indicator,
-                  db_config().tbl_income_statement: ts.pro_api().income}
+                  db_config().tbl_income_statement: ts.pro_api().income,
+                  db_config().tbl_balance_sheet: ts.pro_api().balancesheet,
+                  db_config().tbl_cash_flow_statement: ts.pro_api().cashflow}
 
     return func[task[0]](ts_code=task[1], start_date=task[2], end_date=task[3])
 
@@ -274,145 +276,6 @@ def create_tables() -> None:
                         复权因子 NOT NULL,
                         PRIMARY KEY (股票代码, 交易日期)""")
 
-    create_sqlite_table(db_config().tbl_balance_sheet,
-                        """股票代码 NOT NULL, 
-                        报告期 NOT NULL,
-                        实际公告日期 NOT NULL,
-                        报表类型 NOT NULL,
-                        公司类型,
-                        期末总股本,
-                        资本公积金,
-                        未分配利润,
-                        盈余公积金,
-                        专项储备,
-                        货币资金,
-                        交易性金融资产,
-                        应收票据,
-                        应收账款,
-                        其他应收款,
-                        预付款项,
-                        应收股利,
-                        应收利息,
-                        存货,
-                        待摊费用,
-                        一年内到期的非流动资产,
-                        结算备付金,
-                        拆出资金,
-                        应收保费,
-                        应收分保账款,
-                        应收分保合同准备金,
-                        买入返售金融资产,
-                        其他流动资产,
-                        流动资产合计,
-                        可供出售金融资产,
-                        持有至到期投资,
-                        长期股权投资,
-                        投资性房地产,
-                        定期存款,
-                        其他资产,
-                        长期应收款,
-                        固定资产,
-                        在建工程,
-                        工程物资,
-                        固定资产清理,
-                        生产性生物资产,
-                        油气资产,
-                        无形资产,
-                        研发支出,
-                        商誉,
-                        长期待摊费用,
-                        递延所得税资产,
-                        发放贷款及垫款,
-                        其他非流动资产,
-                        非流动资产合计,
-                        现金及存放中央银行款项,
-                        存放同业和其它金融机构款项,
-                        贵金属,
-                        衍生金融资产,
-                        应收分保未到期责任准备金,
-                        应收分保未决赔款准备金,
-                        应收分保寿险责任准备金,
-                        应收分保长期健康险责任准备金,
-                        存出保证金,
-                        保户质押贷款,
-                        存出资本保证金,
-                        独立账户资产,
-                        其中：客户资金存款,
-                        其中：客户备付金,
-                        其中：交易席位费,
-                        应收款项类投资,
-                        资产总计,
-                        长期借款,
-                        短期借款,
-                        向中央银行借款,
-                        吸收存款及同业存放,
-                        拆入资金,
-                        交易性金融负债,
-                        应付票据,
-                        应付账款,
-                        预收款项,
-                        卖出回购金融资产款,
-                        应付手续费及佣金,
-                        应付职工薪酬,
-                        应交税费,
-                        应付利息,
-                        应付股利,
-                        其他应付款,
-                        预提费用,
-                        递延收益,
-                        应付短期债券,
-                        应付分保账款,
-                        保险合同准备金,
-                        代理买卖证券款,
-                        代理承销证券款,
-                        一年内到期的非流动负债,
-                        其他流动负债,
-                        流动负债合计,
-                        应付债券,
-                        长期应付款,
-                        专项应付款,
-                        预计负债,
-                        递延所得税负债,
-                        递延收益——非流动负债,
-                        其他非流动负债,
-                        非流动负债合计,
-                        同业和其它金融机构存放款项,
-                        衍生金融负债,
-                        吸收存款,
-                        代理业务负债,
-                        其他负债,
-                        预收保费,
-                        存入保证金,
-                        保户储金及投资款,
-                        未到期责任准备金,
-                        未决赔款准备金,
-                        寿险责任准备金,
-                        长期健康险责任准备金,
-                        独立账户负债,
-                        其中：质押借款,
-                        应付赔付款,
-                        应付保单红利,
-                        负债合计,
-                        减：库存股,
-                        一般风险准备,
-                        外币报表折算差额,
-                        未确认的投资损失,
-                        少数股东权益,
-                        股东权益合计（不含少数股东权益）,
-                        股东权益合计（含少数股东权益）,
-                        负债及股东权益总计,
-                        长期应付职工薪酬,
-                        其他综合收益,
-                        其他权益工具,
-                        其他权益工具（优先股）,
-                        融出资金,
-                        应收款项,
-                        应付短期融资款,
-                        应付款项,
-                        持有待售的资产,
-                        持有待售的负债,
-                        PRIMARY KEY (股票代码, 报告期)""")
-
     tables: Dict = {db_config().tbl_cash_flow_statement: """
                                                             股票代码,
                                                             报告期,
@@ -507,7 +370,8 @@ def create_tables() -> None:
 
 def imp_create_tables2() -> Optional:
     for item in db_config():
-        if item != db_config().tbl_income_statement:
+        if item != db_config().tbl_income_statement and item != db_config().tbl_balance_sheet \
+                and item != db_config().tbl_cash_flow_statement:
             continue
         df: pd.DataFrame = get_data_from_tushare((item, '600000.SH', '20170101', '20180801'))
         query_str = reduce(lambda x, y: f"{x}, {y}", df.columns.to_list()) + ", PRIMARY KEY (ts_code, end_date)"
@@ -521,25 +385,16 @@ if __name__ == '__main__':
     #                                                            tbl_name=db_config().tbl_finance_indicator_statement,
     #                                                            getter=imp_get_data_from_tushare,
     #                                                            persistence=imp_persist_data))
+    # imp_limit_access(80, code_set=code_list, gctp_func=partial(gctp2,
+    #                                                            tbl_name=db_config().tbl_income_statement,
+    #                                                            getter=imp_get_data_from_tushare,
+    #                                                            persistence=imp_persist_data))
+    # imp_limit_access(80, code_set=code_list, gctp_func=partial(gctp2,
+    #                                                            tbl_name=db_config().tbl_balance_sheet,
+    #                                                            getter=imp_get_data_from_tushare,
+    #                                                            persistence=imp_persist_data))
     imp_limit_access(80, code_set=code_list, gctp_func=partial(gctp2,
-                                                               tbl_name=db_config().tbl_income_statement,
+                                                               tbl_name=db_config().tbl_cash_flow_statement,
                                                                getter=imp_get_data_from_tushare,
                                                                persistence=imp_persist_data))
-
-    # # persist_list_companies_to_db(transfer_list_companies(download_list_companies()))
-    # tscode_iter: Iterator[Text] = (record[0] for record in download_list_companies().values.tolist())
-    #
-    # gctp_balance_sheet = partial(gctp, tbl_name=db_config().tbl_balance_sheet,
-    #                              clean_data=clean_statement, transfer_data=transfer_statement)
-    #
-    # gctp_income_statement = partial(gctp, tbl_name=db_config().tbl_income_statement,
-    #                                 clean_data=clean_statement, transfer_data=transfer_statement)
-    #
-    # gctp_cash_flow_statement = partial(gctp, tbl_name=db_config().tbl_cash_flow_statement,
-    #                                    clean_data=clean_statement, transfer_data=transfer_statement)
-    #
-    # for ts_code in tscode_iter:
-    #     # gctp_daily_trading_data(ts_code)
-    #     # limit_access(80, ts_code, gctp_balance_sheet)
-    #     limit_access(78, ts_code, gctp_cash_flow_statement)
 
