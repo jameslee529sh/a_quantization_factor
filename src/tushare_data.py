@@ -15,7 +15,7 @@ from src import config
 Sampling_config: NamedTuple = namedtuple('sampling_config', 'start_date, end_date')
 DB_config: NamedTuple = namedtuple('db_config', 'db_path, tbl_daily_trading_data, tbl_balance_sheet, \
                                                 tbl_income_statement, tbl_cash_flow_statement, \
-                                                tbl_finance_indicator_statement')
+                                                tbl_finance_indicator_statement, tbl_')
 
 
 def sampling_config() -> Sampling_config:
@@ -79,7 +79,7 @@ def get_extreme_value_in_db(table_name: Text, field_name: Text, code: Text) -> T
     conn = sqlite3.connect(db_config().db_path)
     c = conn.cursor()
     try:
-        c.execute(f"SELECT MIN({field_name}), MAX({field_name}) FROM {table_name} WHERE 股票代码='{code}'")
+        c.execute(f"SELECT MIN({field_name}), MAX({field_name}) FROM {table_name} WHERE ts_code='{code}'")
         trading_date_range = c.fetchone()
     except sqlite3.Error as e:
         print(e)
@@ -145,7 +145,7 @@ def gctp_daily_trading_data(code: Text) -> Any:
 
 def create_gctp_task(code: Text, tbl_name: Text) -> Optional[Tuple]:
     task: Optional[Tuple] = None
-    trading_date_range: Tuple = get_extreme_value_in_db(tbl_name, '报告期', code)
+    trading_date_range: Tuple = get_extreme_value_in_db(tbl_name, 'end_date', code)
 
     # ToDo: 还需要考虑各种情况，例如，config和db中不一致
     if trading_date_range == (None, None):
@@ -162,11 +162,24 @@ def get_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
                                                                            start_date=task[2], end_date=task[3])
     get_cash_flow_statement = lambda: ts.pro_api(config.tushare_token).cashflow(ts_code=task[1],
                                                                                 start_date=task[2], end_date=task[3])
+    get_finance_indicator_statement = lambda: ts.pro_api(config.tushare_token).fina_indicator(ts_code=task[1],
+                                                                                start_date=task[2], end_date=task[3])
     tbl_tushare = {db_config().tbl_balance_sheet: get_balance_sheet,
                    db_config().tbl_income_statement: get_income_statement,
-                   db_config().tbl_cash_flow_statement: get_cash_flow_statement}
+                   db_config().tbl_cash_flow_statement: get_cash_flow_statement,
+                   db_config().tbl_finance_indicator_statement: get_finance_indicator_statement}
 
     return tbl_tushare[task[0]]()
+
+
+def imp_get_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
+    if task is None:
+        return None
+
+    ts.set_token(config.tushare_token)
+    func: Dict = {db_config().tbl_finance_indicator_statement: ts.pro_api().fina_indicator,}
+
+    return func[task[0]](ts_code=task[1], start_date=task[2], end_date=task[3])
 
 
 def clean_statement(data: pd.DataFrame) -> pd.DataFrame:
@@ -174,20 +187,26 @@ def clean_statement(data: pd.DataFrame) -> pd.DataFrame:
     return temp.drop(['ann_date'], axis=1)
 
 
+def clean_statement2(data: pd.DataFrame) -> pd.DataFrame:
+    return data.drop_duplicates(['end_date'], keep='first')
+
+
 def transfer_statement(data: pd.DataFrame) -> List:
     temp = data.set_index(['ts_code', 'end_date']).reset_index()
     return temp.values.tolist()
 
 
-def persist_data(data: List, tbl_name: Text) -> Any:
+def transfer_statement2(data: pd.DataFrame) -> List:
+    return list(data.values)
+
+
+def imp_persist_data(data: List, tbl_name: Text) -> Any:
     conn = sqlite3.connect(db_config().db_path)
     c = conn.cursor()
 
     # Insert list data
-    field_num: Dict = {db_config().tbl_balance_sheet: 136,
-                       db_config().tbl_income_statement: 64,
-                       db_config().tbl_cash_flow_statement: 89}
-    insert_txt: Text = f'INSERT INTO {tbl_name} VALUES ({"?," * (field_num[tbl_name] - 1) + "?"})'
+    fields_len: int = len(data[0])
+    insert_txt: Text = f'INSERT INTO {tbl_name} VALUES ({"?," * (fields_len - 1) + "?"})'
     c.executemany(insert_txt, data)
 
     # Save (commit) the changes
@@ -205,8 +224,17 @@ def gctp(code: Text, tbl_name: Text,
          clean_data: Callable[[pd.DataFrame], pd.DataFrame],
          transfer_data: Callable[[pd.DataFrame], List]) -> Optional[bool]:
     data = get_data_from_tushare(create_gctp_task(code, tbl_name))
-    return persist_data(transfer_data(clean_data(data)), tbl_name) if data is not None and data.empty is False \
+    return imp_persist_data(transfer_data(clean_data(data)), tbl_name) if data is not None and data.empty is False \
         else None
+
+
+# get, clean, transfer and persist data, gctp
+def gctp2(code: Text, tbl_name: Text,
+          getter: Callable[[Tuple], Any],
+          persistence: Callable[[pd.DataFrame], Any]) -> Optional[bool]:
+    data = getter(create_gctp_task(code, tbl_name))
+    return persistence(transfer_statement2(clean_statement2(data)), tbl_name) \
+        if data is not None and data.empty is False else None
 
 
 def limit_access(access_per_minute: int, code: Text, gctp_func: Callable[[Text], Optional[bool]]) -> Any:
@@ -217,6 +245,17 @@ def limit_access(access_per_minute: int, code: Text, gctp_func: Callable[[Text],
     min_lapse = 60 / access_per_minute
     if rtn is not None and lapse <= min_lapse:
         time.sleep(min_lapse - lapse + 0.015)
+
+
+def imp_limit_access(access_per_minute: int, code_set: List, gctp_func: Callable[[Text], Optional[bool]]) -> Any:
+    for code in code_set:
+        start = time.time()
+        rtn = gctp_func(code)
+        end = time.time()
+        lapse = end - start
+        min_lapse = 60 / access_per_minute
+        if rtn is not None and lapse <= min_lapse:
+            time.sleep(min_lapse - lapse + 0.01)
 
 
 def create_tables() -> None:
@@ -532,9 +571,21 @@ def create_tables() -> None:
     [create_sqlite_table(tbl_name, tables[tbl_name]) for tbl_name in tables.keys()]
 
 
+def create_tables2() -> Optional:
+    df: pd.DataFrame = get_data_from_tushare((db_config().tbl_finance_indicator_statement,
+                                              '600000.SH', '20170101', '20180801'))
+    s = reduce(lambda x, y: f"{x}, {y}", df.columns.to_list()) + ", PRIMARY KEY (ts_code, end_date)"
+    create_sqlite_table(db_config().tbl_finance_indicator_statement, s)
+
+
 if __name__ == '__main__':
-    create_tables()
-    #
+    create_tables2()
+    code_list: List = [record[0] for record in list(download_list_companies().values)]
+    imp_limit_access(80, code_set=code_list, gctp_func=partial(gctp2,
+                                                               tbl_name=db_config().tbl_finance_indicator_statement,
+                                                               getter=imp_get_data_from_tushare,
+                                                               persistence=imp_persist_data))
+
     # # persist_list_companies_to_db(transfer_list_companies(download_list_companies()))
     # tscode_iter: Iterator[Text] = (record[0] for record in download_list_companies().values.tolist())
     #
@@ -551,3 +602,4 @@ if __name__ == '__main__':
     #     # gctp_daily_trading_data(ts_code)
     #     # limit_access(80, ts_code, gctp_balance_sheet)
     #     limit_access(78, ts_code, gctp_cash_flow_statement)
+
