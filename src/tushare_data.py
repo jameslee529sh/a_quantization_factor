@@ -1,6 +1,6 @@
 """ 下载tushare提供的股票数据
 """
-from typing import List, Any, Text, NamedTuple, Tuple, Optional, Callable, Iterator, Dict
+from typing import List, Any, Text, NamedTuple, Tuple, Optional, Callable, Generator, Dict
 from functools import reduce
 import sqlite3
 from collections import namedtuple
@@ -15,7 +15,7 @@ from src import config
 Sampling_config: NamedTuple = namedtuple('sampling_config', 'start_date, end_date')
 DB_config: NamedTuple = namedtuple('db_config', 'db_path, tbl_daily_trading_data, tbl_balance_sheet, \
                                                 tbl_income_statement, tbl_cash_flow_statement, \
-                                                tbl_finance_indicator_statement, tbl_')
+                                                tbl_finance_indicator_statement')
 
 
 def sampling_config() -> Sampling_config:
@@ -177,7 +177,8 @@ def imp_get_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
         return None
 
     ts.set_token(config.tushare_token)
-    func: Dict = {db_config().tbl_finance_indicator_statement: ts.pro_api().fina_indicator,}
+    func: Dict = {db_config().tbl_finance_indicator_statement: ts.pro_api().fina_indicator,
+                  db_config().tbl_income_statement: ts.pro_api().income}
 
     return func[task[0]](ts_code=task[1], start_date=task[2], end_date=task[3])
 
@@ -412,73 +413,6 @@ def create_tables() -> None:
                         持有待售的负债,
                         PRIMARY KEY (股票代码, 报告期)""")
 
-    create_sqlite_table(db_config().tbl_income_statement,
-                        """股票代码 NOT NULL,
-                        报告期 NOT NULL,
-                        实际公告日期 NOT NULL,
-                        报告类型 NOT NULL,
-                        公司类型,
-                        基本每股收益,
-                        稀释每股收益,
-                        营业总收入,
-                        营业收入,
-                        利息收入,
-                        已赚保费,
-                        手续费及佣金收入,
-                        手续费及佣金净收入,
-                        其他经营净收益,
-                        加：其他业务净收益,
-                        保险业务收入,
-                        减：分出保费,
-                        提取未到期责任准备金,
-                        其中：分保费收入,
-                        代理买卖证券业务净收入,
-                        证券承销业务净收入,
-                        受托客户资产管理业务净收入,
-                        其他业务收入,
-                        加：公允价值变动净收益,
-                        加：投资净收益,
-                        其中：对联营企业和合营企业的投资收益,
-                        加：汇兑净收益,
-                        营业总成本,
-                        减：营业成本,
-                        减：利息支出,
-                        减：手续费及佣金支出,
-                        减：营业税金及附加,
-                        减：销售费用,
-                        减：管理费用,
-                        减：财务费用,
-                        减：资产减值损失,
-                        退保金,
-                        赔付总支出,
-                        提取保险责任准备金,
-                        保户红利支出,
-                        分保费用,
-                        营业支出,
-                        减：摊回赔付支出,
-                        减：摊回保险责任准备金,
-                        减：摊回分保费用,
-                        其他业务成本,
-                        营业利润,
-                        加：营业外收入,
-                        减：营业外支出,
-                        其中：减：非流动资产处置净损失,
-                        利润总额,
-                        所得税费用,
-                        净利润（含少数股东损益）,
-                        净利润（不含少数股东损益）,
-                        少数股东损益,
-                        其他综合收益,
-                        综合收益总额,
-                        归属于母公司（或股东）的综合收益总额,
-                        归属于少数股东的综合收益总额,
-                        息税前利润,
-                        息税折旧摊销前利润,
-                        保险业务支出,
-                        年初未分配利润,
-                        可分配利润,
-                        PRIMARY KEY (股票代码, 报告期)""")
-
     tables: Dict = {db_config().tbl_cash_flow_statement: """
                                                             股票代码,
                                                             报告期,
@@ -571,18 +505,24 @@ def create_tables() -> None:
     [create_sqlite_table(tbl_name, tables[tbl_name]) for tbl_name in tables.keys()]
 
 
-def create_tables2() -> Optional:
-    df: pd.DataFrame = get_data_from_tushare((db_config().tbl_finance_indicator_statement,
-                                              '600000.SH', '20170101', '20180801'))
-    s = reduce(lambda x, y: f"{x}, {y}", df.columns.to_list()) + ", PRIMARY KEY (ts_code, end_date)"
-    create_sqlite_table(db_config().tbl_finance_indicator_statement, s)
+def imp_create_tables2() -> Optional:
+    for item in db_config():
+        if item != db_config().tbl_income_statement:
+            continue
+        df: pd.DataFrame = get_data_from_tushare((item, '600000.SH', '20170101', '20180801'))
+        query_str = reduce(lambda x, y: f"{x}, {y}", df.columns.to_list()) + ", PRIMARY KEY (ts_code, end_date)"
+        create_sqlite_table(item, query_str)
 
 
 if __name__ == '__main__':
-    create_tables2()
+    imp_create_tables2()
     code_list: List = [record[0] for record in list(download_list_companies().values)]
+    # imp_limit_access(80, code_set=code_list, gctp_func=partial(gctp2,
+    #                                                            tbl_name=db_config().tbl_finance_indicator_statement,
+    #                                                            getter=imp_get_data_from_tushare,
+    #                                                            persistence=imp_persist_data))
     imp_limit_access(80, code_set=code_list, gctp_func=partial(gctp2,
-                                                               tbl_name=db_config().tbl_finance_indicator_statement,
+                                                               tbl_name=db_config().tbl_income_statement,
                                                                getter=imp_get_data_from_tushare,
                                                                persistence=imp_persist_data))
 
