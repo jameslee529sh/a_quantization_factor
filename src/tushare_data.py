@@ -14,7 +14,7 @@ from src import config
 
 Sampling_config: NamedTuple = namedtuple('sampling_config', 'start_date, end_date')
 DB_config: NamedTuple = namedtuple('db_config', "db_path, tbl_daily_trading_data, tbl_balance_sheet, \
-        tbl_income_statement, tbl_cash_flow_statement, tbl_finance_indicator_statement")
+        tbl_income_statement, tbl_cash_flow_statement, tbl_finance_indicator_statement, tbl_daily_basic")
 
 
 def sampling_config() -> Sampling_config:
@@ -27,7 +27,8 @@ def db_config() -> DB_config:
                      tbl_balance_sheet='balance_sheet',
                      tbl_income_statement='income_statement',
                      tbl_cash_flow_statement='cash_flow_statement',
-                     tbl_finance_indicator_statement='finance_indicator')
+                     tbl_finance_indicator_statement='finance_indicator',
+                     tbl_daily_basic='daily_basic')
 
 
 def download_list_companies() -> pd.DataFrame:
@@ -35,10 +36,6 @@ def download_list_companies() -> pd.DataFrame:
         stock_basic(exchange='', list_status=status, fields='ts_code, symbol,name,area,industry,list_date, delist_date')
     list_companies = [download(s) for s in ['L', 'D', 'P']]
     return reduce(lambda x, y: x.append(y, ignore_index=True), list_companies)
-
-
-def transfer_list_companies(list_companies: pd.DataFrame) -> List:
-    return [record[1:] for record in list_companies[0].values.tolist()]
 
 
 def create_sqlite_table(table_name: Text, column_def: Text) -> Any:
@@ -62,11 +59,6 @@ def get_extreme_value_in_db(table_name: Text, field_name: Text, code: Text) -> T
         c.close()
         conn.close()
     return trading_date_range
-
-
-def get_tushare_data(task: Optional[Tuple]) -> Optional[pd.DataFrame]:
-    return ts.pro_bar(ts_code=task[0], api=ts.pro_api(config.tushare_token), start_date=task[1], end_date=task[2],
-                      adj='qfq', factors=['tor', 'vr'], adjfactor=True) if task is not None else None
 
 
 def create_gctp_task(code: Text, tbl_name: Text) -> Optional[Tuple]:
@@ -101,11 +93,6 @@ def clean_statement2(data: pd.DataFrame) -> pd.DataFrame:
 
 
 def transfer_statement(data: pd.DataFrame) -> List:
-    temp = data.set_index(['ts_code', 'end_date']).reset_index()
-    return temp.values.tolist()
-
-
-def transfer_statement2(data: pd.DataFrame) -> List:
     return list(data.values)
 
 
@@ -133,7 +120,7 @@ def gctp(code: Text, tbl_name: Text,
          getter: Callable[[Tuple], Any],
          persistence: Callable[[pd.DataFrame, Text], Any]) -> Optional[bool]:
     data = getter(create_gctp_task(code, tbl_name))
-    return persistence(transfer_statement2(clean_statement2(data)), tbl_name) \
+    return persistence(transfer_statement(clean_statement2(data)), tbl_name) \
         if data is not None and data.empty is False else None
 
 
