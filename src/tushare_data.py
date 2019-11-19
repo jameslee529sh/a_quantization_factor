@@ -145,31 +145,13 @@ def gctp_daily_trading_data(code: Text) -> Any:
 
 def create_gctp_task(code: Text, tbl_name: Text) -> Optional[Tuple]:
     task: Optional[Tuple] = None
-    trading_date_range: Tuple = get_extreme_value_in_db(tbl_name, 'end_date', code)
+    field_name: Text = 'trade_date' if tbl_name == db_config().tbl_daily_trading_data else 'end_date'
+    trading_date_range: Tuple = get_extreme_value_in_db(tbl_name, field_name, code)
 
     # ToDo: 还需要考虑各种情况，例如，config和db中不一致
     if trading_date_range == (None, None):
         task = (tbl_name, code, sampling_config().start_date, sampling_config().end_date)
     return task
-
-
-def get_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
-    if task is None:
-        return None
-    get_balance_sheet = lambda: ts.pro_api(config.tushare_token).balancesheet(ts_code=task[1],
-                                                                              start_date=task[2], end_date=task[3])
-    get_income_statement = lambda: ts.pro_api(config.tushare_token).income(ts_code=task[1],
-                                                                           start_date=task[2], end_date=task[3])
-    get_cash_flow_statement = lambda: ts.pro_api(config.tushare_token).cashflow(ts_code=task[1],
-                                                                                start_date=task[2], end_date=task[3])
-    get_finance_indicator_statement = lambda: ts.pro_api(config.tushare_token).fina_indicator(ts_code=task[1],
-                                                                                start_date=task[2], end_date=task[3])
-    tbl_tushare = {db_config().tbl_balance_sheet: get_balance_sheet,
-                   db_config().tbl_income_statement: get_income_statement,
-                   db_config().tbl_cash_flow_statement: get_cash_flow_statement,
-                   db_config().tbl_finance_indicator_statement: get_finance_indicator_statement}
-
-    return tbl_tushare[task[0]]()
 
 
 def imp_get_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
@@ -182,7 +164,10 @@ def imp_get_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
                   db_config().tbl_balance_sheet: ts.pro_api().balancesheet,
                   db_config().tbl_cash_flow_statement: ts.pro_api().cashflow}
 
-    return func[task[0]](ts_code=task[1], start_date=task[2], end_date=task[3])
+    tbl_name = task[0]
+    return func[tbl_name](ts_code=task[1], start_date=task[2], end_date=task[3]) \
+        if tbl_name != db_config().tbl_daily_trading_data \
+        else ts.pro_bar(ts_code=task[1], start_date=task[2], end_date=task[3], adj='qfq')
 
 
 def clean_statement(data: pd.DataFrame) -> pd.DataFrame:
@@ -191,7 +176,7 @@ def clean_statement(data: pd.DataFrame) -> pd.DataFrame:
 
 
 def clean_statement2(data: pd.DataFrame) -> pd.DataFrame:
-    return data.drop_duplicates(['end_date'], keep='first')
+    return data.drop_duplicates(['end_date'], keep='first') if 'end_date' in list(data.columns.values) else data
 
 
 def transfer_statement(data: pd.DataFrame) -> List:
@@ -223,31 +208,12 @@ def imp_persist_data(data: List, tbl_name: Text) -> Any:
 
 
 # get, clean, transfer and persist data, gctp
-def gctp(code: Text, tbl_name: Text,
-         clean_data: Callable[[pd.DataFrame], pd.DataFrame],
-         transfer_data: Callable[[pd.DataFrame], List]) -> Optional[bool]:
-    data = get_data_from_tushare(create_gctp_task(code, tbl_name))
-    return imp_persist_data(transfer_data(clean_data(data)), tbl_name) if data is not None and data.empty is False \
-        else None
-
-
-# get, clean, transfer and persist data, gctp
 def gctp2(code: Text, tbl_name: Text,
           getter: Callable[[Tuple], Any],
           persistence: Callable[[pd.DataFrame], Any]) -> Optional[bool]:
     data = getter(create_gctp_task(code, tbl_name))
     return persistence(transfer_statement2(clean_statement2(data)), tbl_name) \
         if data is not None and data.empty is False else None
-
-
-def limit_access(access_per_minute: int, code: Text, gctp_func: Callable[[Text], Optional[bool]]) -> Any:
-    start = time.time()
-    rtn = gctp_func(code)
-    end = time.time()
-    lapse = end - start
-    min_lapse = 60 / access_per_minute
-    if rtn is not None and lapse <= min_lapse:
-        time.sleep(min_lapse - lapse + 0.015)
 
 
 def imp_limit_access(access_per_minute: int, code_set: List, gctp_func: Callable[[Text], Optional[bool]]) -> Any:
@@ -261,120 +227,15 @@ def imp_limit_access(access_per_minute: int, code_set: List, gctp_func: Callable
             time.sleep(min_lapse - lapse + 0.01)
 
 
-def create_tables() -> None:
-    create_sqlite_table('daily_trading_data',
-                        """股票代码 NOT NULL, 
-                        交易日期 NOT NULL, 
-                        开盘价 NOT NULL,
-                        最高价 NOT NULL,
-                        最低价 NOT NULL,
-                        收盘价 NOT NULL,
-                        成交量 NOT NULL,
-                        成交额 NOT NULL,
-                        换手率 NOT NULL,
-                        量比,
-                        复权因子 NOT NULL,
-                        PRIMARY KEY (股票代码, 交易日期)""")
-
-    tables: Dict = {db_config().tbl_cash_flow_statement: """
-                                                            股票代码,
-                                                            报告期,
-                                                            实际公告日期,
-                                                            公司类型,
-                                                            报表类型,
-                                                            净利润,
-                                                            财务费用,
-                                                            销售商品、提供劳务收到的现金,
-                                                            收到的税费返还,
-                                                            客户存款和同业存放款项净增加额,
-                                                            向中央银行借款净增加额,
-                                                            向其他金融机构拆入资金净增加额,
-                                                            收到原保险合同保费取得的现金,
-                                                            保户储金净增加额,
-                                                            收到再保业务现金净额,
-                                                            处置交易性金融资产净增加额,
-                                                            收取利息和手续费净增加额,
-                                                            处置可供出售金融资产净增加额,
-                                                            拆入资金净增加额,
-                                                            回购业务资金净增加额,
-                                                            收到其他与经营活动有关的现金,
-                                                            经营活动现金流入小计,
-                                                            购买商品、接受劳务支付的现金,
-                                                            支付给职工以及为职工支付的现金,
-                                                            支付的各项税费,
-                                                            客户贷款及垫款净增加额,
-                                                            存放央行和同业款项净增加额,
-                                                            支付原保险合同赔付款项的现金,
-                                                            支付手续费的现金,
-                                                            支付保单红利的现金,
-                                                            支付其他与经营活动有关的现金,
-                                                            经营活动现金流出小计,
-                                                            经营活动产生的现金流量净额,
-                                                            收到其他与投资活动有关的现金,
-                                                            收回投资收到的现金,
-                                                            取得投资收益收到的现金,
-                                                            处置固定资产、无形资产和其他长期资产收回的现金净额,
-                                                            处置子公司及其他营业单位收到的现金净额,
-                                                            投资活动现金流入小计,
-                                                            购建固定资产、无形资产和其他长期资产支付的现金,
-                                                            投资支付的现金,
-                                                            取得子公司及其他营业单位支付的现金净额,
-                                                            支付其他与投资活动有关的现金,
-                                                            质押贷款净增加额,
-                                                            投资活动现金流出小计,
-                                                            投资活动产生的现金流量净额,
-                                                            取得借款收到的现金,
-                                                            发行债券收到的现金,
-                                                            收到其他与筹资活动有关的现金,
-                                                            筹资活动现金流入小计,
-                                                            企业自由现金流量,
-                                                            偿还债务支付的现金,分配股利、利润或偿付利息支付的现金,
-                                                            其中：子公司支付给少数股东的股利、利润,
-                                                            支付其他与筹资活动有关的现金,
-                                                            筹资活动现金流出小计,
-                                                            筹资活动产生的现金流量净额,
-                                                            汇率变动对现金的影响,现金及现金等价物净增加额,
-                                                            期初现金及现金等价物余额,
-                                                            期末现金及现金等价物余额,
-                                                            吸收投资收到的现金,
-                                                            其中：子公司吸收少数股东投资收到的现金,
-                                                            未确认投资损失,
-                                                            加：资产减值准备,
-                                                            固定资产折旧、油气资产折耗、生产性生物资产折旧,
-                                                            无形资产摊销,
-                                                            长期待摊费用摊销,待摊费用减少,
-                                                            预提费用增加,
-                                                            处置固定、无形资产和其他长期资产的损失,
-                                                            固定资产报废损失,
-                                                            公允价值变动损失,
-                                                            投资损失,
-                                                            递延所得税资产减少,
-                                                            递延所得税负债增加,
-                                                            存货的减少,
-                                                            经营性应收项目的减少,
-                                                            经营性应付项目的增加,
-                                                            其他,
-                                                            经营活动产生的现金流量净额（间接法）,
-                                                            债务转为资本,
-                                                            一年内到期的可转换公司债券,
-                                                            融资租入固定资产,
-                                                            现金的期末余额,
-                                                            减：现金的期初余额,
-                                                            加：现金等价物的期末余额,
-                                                            减：现金等价物的期初余额,
-                                                            现金及现金等价物净增加额（间接法）,
-                                                            PRIMARY KEY (股票代码, 报告期)""", }
-
-    [create_sqlite_table(tbl_name, tables[tbl_name]) for tbl_name in tables.keys()]
-
-
 def imp_create_tables2() -> Optional:
-    for item in db_config():
-        if item != db_config().tbl_income_statement and item != db_config().tbl_balance_sheet \
-                and item != db_config().tbl_cash_flow_statement:
-            continue
-        df: pd.DataFrame = get_data_from_tushare((item, '600000.SH', '20170101', '20180801'))
-        query_str = reduce(lambda x, y: f"{x}, {y}", df.columns.to_list()) + ", PRIMARY KEY (ts_code, end_date)"
+    tbl_list: List[Text] = [db_config().tbl_cash_flow_statement, db_config().tbl_balance_sheet,
+                            db_config().tbl_income_statement, db_config().tbl_finance_indicator_statement,
+                            db_config().tbl_daily_trading_data]
+    for item in tbl_list:
+        df: pd.DataFrame = imp_get_data_from_tushare((item, '600000.SH', '20170101', '20180801'))
+        query_str = reduce(lambda x, y: f"{x}, {y}", df.columns.to_list())
+        query_str = query_str + ", PRIMARY KEY (ts_code, end_date)" if item != db_config().tbl_daily_trading_data \
+            else query_str + ", PRIMARY KEY (ts_code, trade_date)"
         create_sqlite_table(item, query_str)
 
 
@@ -394,7 +255,7 @@ if __name__ == '__main__':
     #                                                            getter=imp_get_data_from_tushare,
     #                                                            persistence=imp_persist_data))
     imp_limit_access(80, code_set=code_list, gctp_func=partial(gctp2,
-                                                               tbl_name=db_config().tbl_cash_flow_statement,
+                                                               tbl_name=db_config().tbl_daily_trading_data,
                                                                getter=imp_get_data_from_tushare,
                                                                persistence=imp_persist_data))
 
