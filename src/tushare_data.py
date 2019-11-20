@@ -14,7 +14,8 @@ from src import config
 
 Sampling_config: NamedTuple = namedtuple('sampling_config', 'start_date, end_date')
 DB_config: NamedTuple = namedtuple('db_config', "db_path, tbl_daily_trading_data, tbl_balance_sheet, \
-        tbl_income_statement, tbl_cash_flow_statement, tbl_finance_indicator_statement, tbl_daily_basic")
+        tbl_income_statement, tbl_cash_flow_statement, tbl_finance_indicator_statement, tbl_daily_basic, \
+        tbl_index")
 
 
 def sampling_config() -> Sampling_config:
@@ -28,7 +29,8 @@ def db_config() -> DB_config:
                      tbl_income_statement='income_statement',
                      tbl_cash_flow_statement='cash_flow_statement',
                      tbl_finance_indicator_statement='finance_indicator',
-                     tbl_daily_basic='daily_basic')
+                     tbl_daily_basic='daily_basic',
+                     tbl_index='securities_index')
 
 
 def download_list_companies() -> pd.DataFrame:
@@ -63,7 +65,10 @@ def get_extreme_value_in_db(table_name: Text, field_name: Text, code: Text) -> T
 
 def create_gctp_task(code: Text, tbl_name: Text) -> Optional[Tuple]:
     task: Optional[Tuple] = None
-    field_name: Text = 'trade_date' if tbl_name == db_config().tbl_daily_trading_data else 'end_date'
+    field_name: Text = 'trade_date' \
+        if tbl_name == db_config().tbl_daily_trading_data or tbl_name == db_config().tbl_daily_basic \
+           or tbl_name == db_config().tbl_index \
+        else 'end_date'
     trading_date_range: Tuple = get_extreme_value_in_db(tbl_name, field_name, code)
 
     # ToDo: 还需要考虑各种情况，例如，config和db中不一致
@@ -80,12 +85,38 @@ def imp_get_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
     func: Dict = {db_config().tbl_finance_indicator_statement: ts.pro_api().fina_indicator,
                   db_config().tbl_income_statement: ts.pro_api().income,
                   db_config().tbl_balance_sheet: ts.pro_api().balancesheet,
-                  db_config().tbl_cash_flow_statement: ts.pro_api().cashflow}
+                  db_config().tbl_cash_flow_statement: ts.pro_api().cashflow,
+                  db_config().tbl_daily_basic: ts.pro_api().daily_basic}
 
     tbl_name = task[0]
     return func[tbl_name](ts_code=task[1], start_date=task[2], end_date=task[3]) \
         if tbl_name != db_config().tbl_daily_trading_data \
         else ts.pro_bar(ts_code=task[1], start_date=task[2], end_date=task[3], adj='qfq')
+
+
+def imp_get_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
+    if task is None:
+        return None
+
+    ts.set_token(config.tushare_token)
+    func: Dict = {db_config().tbl_finance_indicator_statement: ts.pro_api().fina_indicator,
+                  db_config().tbl_income_statement: ts.pro_api().income,
+                  db_config().tbl_balance_sheet: ts.pro_api().balancesheet,
+                  db_config().tbl_cash_flow_statement: ts.pro_api().cashflow,
+                  db_config().tbl_daily_basic: ts.pro_api().daily_basic}
+
+    tbl_name = task[0]
+    return func[tbl_name](ts_code=task[1], start_date=task[2], end_date=task[3]) \
+        if tbl_name != db_config().tbl_daily_trading_data \
+        else ts.pro_bar(ts_code=task[1], start_date=task[2], end_date=task[3], adj='qfq')
+
+
+def imp_get_trade_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
+    ts.set_token(config.tushare_token)
+    asset: Dict = {db_config().tbl_daily_trading_data: 'E',
+                   db_config().tbl_index: 'I'}
+    return ts.pro_bar(ts_code=task[1], asset=asset[task[0]], start_date=task[2], end_date=task[3], adj='qfq') \
+        if task is not None else None
 
 
 def clean_statement2(data: pd.DataFrame) -> pd.DataFrame:
@@ -135,21 +166,34 @@ def imp_limit_access(access_per_minute: int, code_set: List, gctp_func: Callable
             time.sleep(min_lapse - lapse + 0.01)
 
 
-def imp_create_tables2() -> Optional:
+def imp_create_fina_tables() -> Optional:
     tbl_list: List[Text] = [db_config().tbl_cash_flow_statement, db_config().tbl_balance_sheet,
                             db_config().tbl_income_statement, db_config().tbl_finance_indicator_statement,
-                            db_config().tbl_daily_trading_data]
+                            db_config().tbl_daily_basic, db_config().tbl_daily_trading_data]
     for item in tbl_list:
         df: pd.DataFrame = imp_get_data_from_tushare((item, '600000.SH', '20170101', '20180801'))
         query_str = reduce(lambda x, y: f"{x}, {y}", df.columns.to_list())
-        query_str = query_str + ", PRIMARY KEY (ts_code, end_date)" if item != db_config().tbl_daily_trading_data \
+        query_str = query_str + ", PRIMARY KEY (ts_code, end_date)" \
+            if item != db_config().tbl_daily_trading_data and item != db_config().tbl_daily_basic \
             else query_str + ", PRIMARY KEY (ts_code, trade_date)"
         create_sqlite_table(item, query_str)
 
 
+def imp_create_trade_tables() -> Optional:
+    tbl_list: List[Text] = [db_config().tbl_index, ]
+
+    for item in tbl_list:
+        sample_code: Callable[[Text], Text] = lambda t: '399300.SZ' if t == db_config().tbl_index else '600000.SH'
+        df: pd.DataFrame = imp_get_trade_data_from_tushare((item, sample_code(item), '20170101', '20170301'))
+        query_str = reduce(lambda x, y: f"{x}, {y}", df.columns.to_list())
+        query_str = query_str + ", PRIMARY KEY (ts_code, trade_date)"
+        create_sqlite_table(item, query_str)
+
+
 if __name__ == '__main__':
-    imp_create_tables2()
-    code_list: List = [record[0] for record in list(download_list_companies().values)]
+    # imp_create_fina_tables()
+    imp_create_trade_tables()
+    # code_list: List = [record[0] for record in list(download_list_companies().values)]
     # imp_limit_access(80, code_set=code_list, gctp_func=partial(gctp2,
     #                                                            tbl_name=db_config().tbl_finance_indicator_statement,
     #                                                            getter=imp_get_data_from_tushare,
@@ -162,7 +206,15 @@ if __name__ == '__main__':
     #                                                            tbl_name=db_config().tbl_balance_sheet,
     #                                                            getter=imp_get_data_from_tushare,
     #                                                            persistence=imp_persist_data))
-    imp_limit_access(80, code_set=code_list, gctp_func=partial(gctp,
-                                                               tbl_name=db_config().tbl_daily_trading_data,
-                                                               getter=imp_get_data_from_tushare,
-                                                               persistence=imp_persist_data))
+    # imp_limit_access(80, code_set=code_list, gctp_func=partial(gctp,
+    #                                                            tbl_name=db_config().tbl_daily_trading_data,
+    #                                                            getter=imp_get_data_from_tushare,
+    #                                                            persistence=imp_persist_data))
+    # imp_limit_access(80, code_set=code_list, gctp_func=partial(gctp,
+    #                                                            tbl_name=db_config().tbl_daily_basic,
+    #                                                            getter=imp_get_data_from_tushare,
+    #                                                            persistence=imp_persist_data))
+    imp_limit_access(80, code_set=['399300.SZ', ], gctp_func=partial(gctp,
+                                                                     tbl_name=db_config().tbl_index,
+                                                                     getter=imp_get_trade_data_from_tushare,
+                                                                     persistence=imp_persist_data))
