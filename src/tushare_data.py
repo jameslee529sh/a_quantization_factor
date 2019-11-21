@@ -49,7 +49,7 @@ def imp_create_sqlite_table(table_name: Text, column_def: Text) -> Any:
     conn.close()
 
 
-def get_extreme_value_in_db(table_name: Text, field_name: Text, code: Text) -> Tuple:
+def imp_get_extreme_value_in_db(table_name: Text, field_name: Text, code: Text) -> Tuple:
     trading_date_range: Tuple = (None,)
     conn = sqlite3.connect(db_config().db_path)
     c = conn.cursor()
@@ -64,35 +64,41 @@ def get_extreme_value_in_db(table_name: Text, field_name: Text, code: Text) -> T
     return trading_date_range
 
 
+def imp_get_records_from_db(sql_str: Text) -> Optional[Iterator[NamedTuple]]:
+    conn = sqlite3.connect(db_config().db_path)
+    c = conn.cursor()
+    records = None
+    names = None
+    try:
+        c.execute(sql_str)
+        names = [description[0] for description in c.description]
+        records = c.fetchall()
+    except sqlite3.Error as e:
+        print(e)
+    finally:
+        c.close()
+        conn.close()
+    return db_tuple_to_namedtuple(records, names) if names is not None else None
+
+
+def db_tuple_to_namedtuple(data: List[Tuple], names: List[Text]) -> Iterator[NamedTuple]:
+    # names_str: Text = reduce(lambda x, y: f"{x}, {y}", names)
+    SQLiteTable = namedtuple('sqlitetable', names)
+    return (SQLiteTable(*d) for d in data)
+
+
 def create_gctp_task(code: Text, tbl_name: Text) -> Optional[Tuple]:
     task: Optional[Tuple] = None
     field_name: Text = 'trade_date' \
         if tbl_name == db_config().tbl_daily_trading_data or tbl_name == db_config().tbl_daily_basic \
            or tbl_name == db_config().tbl_index \
         else 'end_date'
-    trading_date_range: Tuple = get_extreme_value_in_db(tbl_name, field_name, code)
+    trading_date_range: Tuple = imp_get_extreme_value_in_db(tbl_name, field_name, code)
 
     # ToDo: 还需要考虑各种情况，例如，config和db中不一致
     if trading_date_range == (None, None):
         task = (tbl_name, code, sampling_config().start_date, sampling_config().end_date)
     return task
-
-
-# def imp_get_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
-#     if task is None:
-#         return None
-#
-#     ts.set_token(config.tushare_token)
-#     func: Dict = {db_config().tbl_finance_indicator_statement: ts.pro_api().fina_indicator,
-#                   db_config().tbl_income_statement: ts.pro_api().income,
-#                   db_config().tbl_balance_sheet: ts.pro_api().balancesheet,
-#                   db_config().tbl_cash_flow_statement: ts.pro_api().cashflow,
-#                   db_config().tbl_daily_basic: ts.pro_api().daily_basic}
-#
-#     tbl_name = task[0]
-#     return func[tbl_name](ts_code=task[1], start_date=task[2], end_date=task[3]) \
-#         if tbl_name != db_config().tbl_daily_trading_data \
-#         else ts.pro_bar(ts_code=task[1], start_date=task[2], end_date=task[3], adj='qfq')
 
 
 def imp_get_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
