@@ -1,6 +1,6 @@
 """ 下载tushare提供的股票数据
 """
-from typing import List, Any, Text, NamedTuple, Tuple, Optional, Callable, Dict
+from typing import List, Any, Text, NamedTuple, Tuple, Optional, Callable, Dict, Iterator
 from functools import reduce
 import sqlite3
 from collections import namedtuple
@@ -196,6 +196,11 @@ def create_db_tables(tbl_name: Text,
                      build_tbl_sql_func: Callable[[Text], Text],
                      create_table_func: Callable[[Text, Text], Any]) -> Any:
     create_table_func(tbl_name, build_tbl_sql_func(tbl_name))
+
+
+def imp_get_trade_cal(start: Text, end: Text) -> Iterator[Tuple[Text, int]]:
+    return ts.pro_api(config.tushare_token).trade_cal(exchange='', start_date=start, end_date=end)\
+        .itertuples(index=False, name='Trade_cal')
 
 
 if __name__ == '__main__':
