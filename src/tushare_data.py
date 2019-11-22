@@ -82,7 +82,6 @@ def imp_get_records_from_db(sql_str: Text) -> Optional[Iterator[NamedTuple]]:
 
 
 def db_tuple_to_namedtuple(data: List[Tuple], names: List[Text]) -> Iterator[NamedTuple]:
-    # names_str: Text = reduce(lambda x, y: f"{x}, {y}", names)
     SQLiteTable = namedtuple('sqlitetable', names)
     return (SQLiteTable(*d) for d in data)
 
@@ -217,7 +216,8 @@ def imp_get_trade_cal(start: Text, end: Text) -> Iterator[Tuple[Text, int]]:
 
 if __name__ == '__main__':
     create_db_tables(db_config().tbl_name_history,
-                     lambda s: 'ts_code, name, start_date, end_date, ann_date, change_reason',
+                     lambda s: 'ts_code, name, start_date, end_date, ann_date, change_reason \
+                                PRIMARY KEY (ts_code, start_date) ',
                      imp_create_sqlite_table)
     # imp_create_fina_tables()
     # imp_create_trade_tables()
