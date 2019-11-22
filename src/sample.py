@@ -1,6 +1,6 @@
 """ 构建用于因子研究的股票样本数据池
 """
-from typing import NamedTuple, Iterator, Text, Tuple, Callable, List
+from typing import NamedTuple, Iterator, Text, Tuple, Callable, List, Dict, Optional
 from collections import namedtuple
 from functools import partial
 
@@ -36,7 +36,23 @@ def list_is_trading(updated_it: Iterator[Iterator]) -> Iterator[NamedTuple]:
 
 
 def list_can_be_bought(updated_it: Iterator[Iterator]) -> Iterator[NamedTuple]:
-    return filter(lambda d: d.pct_chg < 0.096, (d for d in updated_it))
+    return filter(lambda d: d.pct_chg < 0.096, (list_it for list_it in updated_it))
+
+
+def list_is_not_st(updated_it: Iterator[Iterator],
+                   name_history_func: Callable[[Text], Iterator[NamedTuple]]) -> Iterator[NamedTuple]:
+    # ToDo: tushare
+    def name_is_st(ts_code: Text, updated_date: Text) -> bool:
+        def date_in_range(r: NamedTuple) -> bool:
+            return r.start_date <= updated_date and (r.end_date is None or updated_date <= r.end_date)
+
+        name_history_it: Iterator[NamedTuple] = name_history_func(f"select * from name_history")
+        name_on_updated_it: Iterator[NamedTuple] = filter(date_in_range, name_history_it)
+        name_is_st_it: Iterator[NamedTuple] = filter(lambda record: record.name.find('ST') >= 0, name_on_updated_it)
+        name_is_st_dict: Dict = {r.ts_code: r for r in name_is_st_it}
+        return ts_code not in name_is_st_dict
+
+    return filter(lambda r: name_is_st(r.ts_code, r.trade_date), (list_it for list_it in updated_it))
 
 
 if __name__ == "__main__":
@@ -48,6 +64,10 @@ if __name__ == "__main__":
     list_is_trading_it: Iterator[Iterator[NamedTuple]] = map(list_is_trading, list_iter)
     list_can_be_bought_it: Iterator[Iterator[NamedTuple]] = map(list_can_be_bought, list_is_trading_it)
 
-    it = (d for updated_iter in list_can_be_bought_it for d in updated_iter)
+    list_is_not_st_it: Iterator[Iterator[NamedTuple]] = map(partial(list_is_not_st,
+                                                                    name_history_func=td.imp_get_records_from_db),
+                                                            list_can_be_bought_it)
+
+    it = (d for updated_iter in list_is_not_st_it for d in updated_iter)
     print(next(it))
     print(next(it))

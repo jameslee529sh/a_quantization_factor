@@ -110,13 +110,17 @@ def imp_get_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
                   db_config().tbl_income_statement: ts.pro_api().income,
                   db_config().tbl_balance_sheet: ts.pro_api().balancesheet,
                   db_config().tbl_cash_flow_statement: ts.pro_api().cashflow,
-                  db_config().tbl_daily_basic: ts.pro_api().daily_basic,
-                  db_config().tbl_name_history: ts.pro_api().namechange}
+                  db_config().tbl_daily_basic: ts.pro_api().daily_basic}
 
     tbl_name = task[0]
-    return func[tbl_name](ts_code=task[1], start_date=task[2], end_date=task[3]) \
-        if tbl_name != db_config().tbl_daily_trading_data \
-        else ts.pro_bar(ts_code=task[1], start_date=task[2], end_date=task[3], adj='qfq')
+    if tbl_name in func:
+        return func[tbl_name](ts_code=task[1], start_date=task[2], end_date=task[3])
+    elif tbl_name == db_config().tbl_daily_trading_data:
+        return ts.pro_bar(ts_code=task[1], start_date=task[2], end_date=task[3], adj='qfq')
+    elif tbl_name == db_config().tbl_name_history:
+        return ts.pro_api().namechange(ts_code=task[1])
+    else:
+        return None
 
 
 def imp_get_trade_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
@@ -173,6 +177,8 @@ def imp_limit_access(access_per_minute: int, code_set: List, gctp_func: Callable
         if lapse <= min_lapse:
             time.sleep(min_lapse - lapse + 0.01)
 
+
+# TODO: daily_trading_data table需要建立trade_date INDEX
 
 def imp_create_fina_tables() -> Optional:
     tbl_list: List[Text] = [db_config().tbl_cash_flow_statement, db_config().tbl_balance_sheet,
