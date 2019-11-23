@@ -122,6 +122,11 @@ def imp_get_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
         return None
 
 
+def imp_get_index_daily_basic_from_tushare(ts_code: Text, trade_date: Text) -> NamedTuple:
+    df: pd.DataFrame = ts.pro_api(config.tushare_token).index_dailybasic(ts_code=ts_code, trade_date=trade_date)
+    return list(df.itertuples(index=False, name='index_daily_basic'))[0]
+
+
 def imp_get_trade_data_from_tushare(task: Tuple) -> Optional[pd.DataFrame]:
     ts.set_token(config.tushare_token)
     asset: Dict = {db_config().tbl_daily_trading_data: 'E',
@@ -166,6 +171,24 @@ def gctp(code: Text, tbl_name: Text,
         if data is not None and data.empty is False else None
 
 
+def impf_gctp_daily_trade_data(ts_code: Text) -> Optional[Text]:
+    rtn: Text = (ts_code, f"日交易数据没有成功缓存到本地 ")
+
+    # TODO: 数据是否已经保存在数据库中
+    range_in_db: Tuple = imp_get_extreme_value_in_db(db_config().tbl_daily_trading_data, 'trade_date', ts_code)
+
+    df: pd.DataFrame = ts.pro_api(config.tushare_token).daily(ts_code=ts_code,
+                                                              start_date=sampling_config().start_date,
+                                                              end_date=sampling_config().end_date)
+
+    if df is not None and df.empty is not True:
+        # TODO: 避免重复插入
+        imp_persist_data(list(df.values), db_config().tbl_daily_trading_data)
+        rtn = (ts_code, f"日交易数据缓存到本地数据库的{db_config().tbl_daily_trading_data}表格成功")
+
+    return rtn
+
+
 def imp_limit_access(access_per_minute: int, code_set: List, gctp_func: Callable[[Text], Optional[bool]]) -> Any:
     for code in code_set:
         start = time.time()
@@ -174,7 +197,8 @@ def imp_limit_access(access_per_minute: int, code_set: List, gctp_func: Callable
         lapse = end - start
         min_lapse = 60 / access_per_minute
         if lapse <= min_lapse:
-            time.sleep(min_lapse - lapse + 0.01)
+            time.sleep(min_lapse - lapse + 0.002)
+        print(rtn)
 
 
 # TODO: daily_trading_data table需要建立trade_date INDEX
@@ -215,10 +239,10 @@ def imp_get_trade_cal(start: Text, end: Text) -> Iterator[Tuple[Text, int]]:
 
 
 if __name__ == '__main__':
-    create_db_tables(db_config().tbl_name_history,
-                     lambda s: 'ts_code, name, start_date, end_date, ann_date, change_reason \
-                                PRIMARY KEY (ts_code, start_date) ',
-                     imp_create_sqlite_table)
+    # create_db_tables(db_config().tbl_name_history,
+    #                  lambda s: 'ts_code, name, start_date, end_date, ann_date, change_reason \
+    #                             PRIMARY KEY (ts_code, start_date) ',
+    #                  imp_create_sqlite_table)
     # imp_create_fina_tables()
     # imp_create_trade_tables()
     code_list: List = [record[0] for record in list(download_list_companies().values)]
@@ -246,7 +270,8 @@ if __name__ == '__main__':
     #                                                                  tbl_name=db_config().tbl_index,
     #                                                                  getter=imp_get_trade_data_from_tushare,
     #                                                                  persistence=imp_persist_data))
-    imp_limit_access(100, code_set=code_list, gctp_func=partial(gctp,
-                                                               tbl_name=db_config().tbl_name_history,
-                                                               getter=imp_get_data_from_tushare,
-                                                               persistence=imp_persist_data))
+    # imp_limit_access(100, code_set=code_list, gctp_func=partial(gctp,
+    #                                                            tbl_name=db_config().tbl_name_history,
+    #                                                            getter=imp_get_data_from_tushare,
+    #                                                            persistence=imp_persist_data))
+    imp_limit_access(200, code_set=['600018.SH', ], gctp_func=impf_gctp_daily_trade_data)

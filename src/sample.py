@@ -2,29 +2,31 @@
 """
 from typing import NamedTuple, Iterator, Text, Tuple, Callable, List, Dict, Optional
 from collections import namedtuple
-from functools import partial
+from functools import partial, lru_cache
 import datetime
 
 from src import tushare_data as td
 
 Samples = Iterator[NamedTuple]  # 某一日的样本股集合
-Sample_pool = Iterator[Samples] # 样本池
+Sample_pool = Iterator[Samples]  # 样本池
 
-Sample_config: NamedTuple = namedtuple('sample_config', 'start_date, end_date, updated_date1, updated_date2')
+Sample_config: NamedTuple = namedtuple('sample_config', 'start_date, end_date, updated_date1, updated_date2, \
+                                        base_index, low_market_to_base_index')
 
 
 def sample_config() -> Sample_config:
-    return Sample_config(start_date='20050430', end_date='20190430', updated_date1='0430', updated_date2='1031')
+    return Sample_config(start_date='20050430', end_date='20190430', updated_date1='0430', updated_date2='1031',
+                         base_index='399300.SZ', low_market_to_base_index=0.05)
 
 
 def filter_updated_date(trade_cal_iter: Iterator[Tuple[Text, Text]]) -> Iterator[Text]:
     test_updated_date: Callable[[Text], bool] = lambda d: d.find(sample_config().updated_date1) == 4 \
-                                                       or d.find(sample_config().updated_date2) == 4
+                                                          or d.find(sample_config().updated_date2) == 4
     for exchange, cal_date, is_open in trade_cal_iter:
         if test_updated_date(cal_date) is True:
             if is_open == 1:
                 test_updated_date = lambda d: d.find(sample_config().updated_date1) == 4 \
-                                           or d.find(sample_config().updated_date2) == 4
+                                              or d.find(sample_config().updated_date2) == 4
                 yield cal_date
             else:
                 test_updated_date = lambda d: True if is_open == 1 else False
@@ -72,6 +74,23 @@ def list_is_over_years(updated_it: Samples, name_history_func: Callable[[Text], 
     return filter(lambda r: is_over_years(r.ts_code, r.trade_date), (list_it for list_it in updated_it))
 
 
+def market_value_exceeds_low_limit(updated_it: Samples,
+                                   index_daily_basic_func: Callable[[Text, Text], NamedTuple],
+                                   stock_daily_basic_func: Callable[[Text], Iterator[NamedTuple]]) -> Samples:
+    @lru_cache(maxsize=128)
+    def index_market_value(trade_date: Text) -> float:
+        return index_daily_basic_func(sample_config().base_index, trade_date).total_mv
+
+    def stock_market_value(ts_code: Text, trade_date: Text) -> float:
+        daily_basic_iter: Iterator = stock_daily_basic_func(f"SELECT * FROM daily_basic WHERE ts_code='{ts_code}' \
+                                                                and trade_date='{trade_date}'")
+        return next(daily_basic_iter).total_mv
+
+    return filter(lambda r: index_market_value(r.trade_date) * sample_config().low_market_to_base_index <
+                            stock_market_value(r.ts_code, r.trade_date),
+                  (list_it for list_it in updated_it))
+
+
 if __name__ == "__main__":
     updated_iter: Iterator[Text] = filter_updated_date(td.imp_get_trade_cal(start=sample_config().start_date,
                                                                             end=sample_config().end_date))
@@ -86,7 +105,11 @@ if __name__ == "__main__":
 
     list_is_over_years_it: Sample_pool = map(partial(list_is_over_years, name_history_func=td.imp_get_records_from_db),
                                              list_is_not_st_it)
-
-    it = (d for updated_iter in list_is_over_years_it for d in updated_iter)
-    print(next(it))
-    print(next(it))
+    market_value_exceeds_low_limit_it: Sample_pool = map(partial(market_value_exceeds_low_limit,
+                                                                 index_daily_basic_func=
+                                                                 td.imp_get_index_daily_basic_from_tushare,
+                                                                 stock_daily_basic_func=td.imp_get_records_from_db),
+                                                         list_is_over_years_it)
+    for updated_samples in market_value_exceeds_low_limit_it:
+        for sample in updated_samples:
+            print(sample)
