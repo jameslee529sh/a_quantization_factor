@@ -139,8 +139,7 @@ def build_samples(trade_date: Text,
     samples: set = set(non_st_securities).intersection(set(companies_listed_for_many_years))
     samples = samples.intersection(set(tradable_securities))
     samples = samples.intersection(set(normal_market_value_companies))
-    return len(non_st_securities), len(companies_listed_for_many_years), \
-           len(tradable_securities), len(normal_market_value_companies), len(samples)
+    return samples
 
 
 impf_build_samples_by_tushare = partial(build_samples,
@@ -156,13 +155,5 @@ if __name__ == "__main__":
     # 获取构建样本的时间序列（每年4月30日，10月31日或其后的第一个交易日）
     updated_date_iter: Iterator[Text] = filter_updated_date(td.imp_get_trade_cal(start=sample_config().start_date,
                                                                                  end=sample_config().end_date))
-    for updated_date in updated_date_iter:
-
-        print(updated_date)
-        temp = impf_build_samples_by_tushare(updated_date)
-        print(temp)
-
-        # TODO: 非ST公司
-        # TODO: 上市已经满2年
-        # TODO: 市值超过沪深300成分股公司均值的1/20以上
+    samples_iter = (impf_build_samples_by_tushare(updated_date) for updated_date in updated_date_iter)
 
