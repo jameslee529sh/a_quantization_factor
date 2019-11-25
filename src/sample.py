@@ -99,7 +99,7 @@ def impf_get_non_st_securities_by_tushare_cache(trade_date: Text) -> pd.Series:
     df: pd.DataFrame = td.imp_get_records_from_db(f"select * from name_history where start_date <= '{trade_date}' \
                                                     and (end_date is null or '{trade_date}' <= end_date)")
     df2 = df[df['name'].apply(lambda c: c.find('ST') < 0)]
-    return df2
+    return df2['ts_code']
 
 
 def impf_get_companies_listed_for_many_years_by_tushare(trade_date: Text) -> pd.Series:
@@ -114,7 +114,7 @@ def impf_get_companies_listed_for_many_years_by_tushare(trade_date: Text) -> pd.
     df: pd.DataFrame = td.download_list_companies()
     df2 = df[df['list_date'].map(is_over_years)]
     df3 = df2[df2['delist_date'].map(is_still_list)]
-    return df3
+    return df3['ts_code']
 
 
 def impf_exclude_small_market_value_companies_by_tushare_cache(trade_date: Text) -> pd.Series:
@@ -124,7 +124,7 @@ def impf_exclude_small_market_value_companies_by_tushare_cache(trade_date: Text)
                                                                                   ts_code='399300.SZ').iloc[0]['total_mv']
     df: pd.DataFrame = td.imp_get_records_from_db(f"SELECT * FROM daily_basic WHERE trade_date='{trade_date}'")
     low_limit: float = index_market_value / (300 * 50 * 10000)
-    return df[df['total_mv'] >= low_limit] #(index_market_value / (300*20*10000))]
+    return df[df['total_mv'] >= low_limit]['ts_code']
 
 
 def build_samples(trade_date: Text,
@@ -136,8 +136,11 @@ def build_samples(trade_date: Text,
     companies_listed_for_many_years: pd.Series = get_companies_listed_for_many_years(trade_date)
     tradable_securities: pd.Series = get_tradable_securities(trade_date)
     normal_market_value_companies = exclude_small_market_value_companies(trade_date)
+    samples: set = set(non_st_securities).intersection(set(companies_listed_for_many_years))
+    samples = samples.intersection(set(tradable_securities))
+    samples = samples.intersection(set(normal_market_value_companies))
     return len(non_st_securities), len(companies_listed_for_many_years), \
-           len(tradable_securities), len(normal_market_value_companies)
+           len(tradable_securities), len(normal_market_value_companies), len(samples)
 
 
 impf_build_samples_by_tushare = partial(build_samples,
