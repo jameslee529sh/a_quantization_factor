@@ -1,8 +1,8 @@
 """ 构建用于因子研究的股票样本数据池
 """
-from typing import NamedTuple, Iterator, Text, Tuple, Callable, List, Dict, Optional
+from typing import NamedTuple, Iterator, Text, Tuple, Callable, List, Dict, Optional, Set
 from collections import namedtuple
-from functools import partial, lru_cache
+from functools import partial, lru_cache, reduce
 import datetime
 
 import pandas as pd
@@ -16,6 +16,7 @@ Sample_pool = Iterator[Samples]  # 样本池
 
 Sample_config: NamedTuple = namedtuple('sample_config', 'start_date, end_date, updated_date1, updated_date2, \
                                         base_index, low_market_to_base_index')
+Samples_info: NamedTuple = namedtuple('sample_info', 'date, mean_mv, median_mv, min_mv, count')
 
 
 def sample_config() -> Sample_config:
@@ -92,17 +93,17 @@ def market_value_exceeds_low_limit(updated_it: Samples,
 
 def impf_get_tradable_securities_by_tushare(trade_date: Text) -> pd.Series:
     df: pd.DataFrame = ts.pro_api(config.tushare_token).daily(trade_date=trade_date)
-    return df[df['pct_chg'] < 9.6]['ts_code']
+    return df[df['pct_chg'] < 9.6]
 
 
-def impf_get_non_st_securities_by_tushare_cache(trade_date: Text) -> pd.Series:
+def impf_get_non_st_securities_by_tushare_cache(trade_date: Text) -> pd.DataFrame:
     df: pd.DataFrame = td.imp_get_records_from_db(f"select * from name_history where start_date <= '{trade_date}' \
                                                     and (end_date is null or '{trade_date}' <= end_date)")
     df2 = df[df['name'].apply(lambda c: c.find('ST') < 0)]
-    return df2['ts_code']
+    return df2
 
 
-def impf_get_companies_listed_for_many_years_by_tushare(trade_date: Text) -> pd.Series:
+def impf_get_companies_listed_for_many_years_by_tushare(trade_date: Text) -> pd.DataFrame:
     def is_over_years(listed_date: Text) -> bool:
         delta: datetime.timedelta = datetime.datetime.strptime(trade_date, "%Y%m%d") \
                                     - datetime.datetime.strptime(listed_date, "%Y%m%d")
@@ -114,46 +115,61 @@ def impf_get_companies_listed_for_many_years_by_tushare(trade_date: Text) -> pd.
     df: pd.DataFrame = td.download_list_companies()
     df2 = df[df['list_date'].map(is_over_years)]
     df3 = df2[df2['delist_date'].map(is_still_list)]
-    return df3['ts_code']
+    return df3
 
 
-def impf_exclude_small_market_value_companies_by_tushare_cache(trade_date: Text) -> pd.Series:
+def impf_exclude_small_market_value_companies_by_tushare_cache(trade_date: Text) -> pd.DataFrame:
     # index_market_value: float = td.imp_get_records_from_db(f"SELECT total_mv FROM securities_index \
     #                                                         WHERE ts_code='399300.SZ' and trade_date='{trade_date}'")
     index_market_value: float = ts.pro_api(config.tushare_token).index_dailybasic(trade_date=trade_date,
-                                                                                  ts_code='399300.SZ').iloc[0]['total_mv']
+                                                                                  ts_code='399300.SZ').iloc[0][
+        'total_mv']
     df: pd.DataFrame = td.imp_get_records_from_db(f"SELECT * FROM daily_basic WHERE trade_date='{trade_date}'")
     low_limit: float = index_market_value / (300 * 50 * 10000)
-    return df[df['total_mv'] >= low_limit]['ts_code']
+    return df[df['total_mv'] >= low_limit]
 
 
 def build_samples(trade_date: Text,
-                  get_non_st_securities: Callable[[Text], pd.Series],
-                  get_companies_listed_for_many_years: Callable[[Text], pd.Series],
-                  get_tradable_securities: Callable[[Text], pd.Series],
-                  exclude_small_market_value_companies: Callable[[Text], pd.Series]) -> pd.Series:
-    non_st_securities: pd.Series = get_non_st_securities(trade_date)
-    companies_listed_for_many_years: pd.Series = get_companies_listed_for_many_years(trade_date)
-    tradable_securities: pd.Series = get_tradable_securities(trade_date)
-    normal_market_value_companies = exclude_small_market_value_companies(trade_date)
-    samples: set = set(non_st_securities).intersection(set(companies_listed_for_many_years))
-    samples = samples.intersection(set(tradable_securities))
-    samples = samples.intersection(set(normal_market_value_companies))
-    return samples
+                  get_non_st_securities: Callable[[Text], pd.DataFrame],
+                  get_companies_listed_for_many_years: Callable[[Text], pd.DataFrame],
+                  get_tradable_securities: Callable[[Text], pd.DataFrame],
+                  exclude_small_market_value_companies: Callable[[Text], pd.DataFrame]) -> Tuple[Samples_info, Set]:
+    non_st_securities: pd.DataFrame = get_non_st_securities(trade_date)
+    companies_listed_for_many_years: pd.DataFrame = get_companies_listed_for_many_years(trade_date)
+    tradable_securities: pd.DataFrame = get_tradable_securities(trade_date)
+    normal_market_value_companies: pd.DataFrame = exclude_small_market_value_companies(trade_date)
+    samples: set = set(non_st_securities['ts_code']).intersection(set(companies_listed_for_many_years['ts_code']))
+    samples = samples.intersection(set(tradable_securities['ts_code']))
+    samples = samples.intersection(set(normal_market_value_companies['ts_code']))
+
+    market_value_samples: pd.DataFrame = normal_market_value_companies[normal_market_value_companies['ts_code']
+        .map(lambda c: c in samples)]
+    mv: pd.Series = market_value_samples['total_mv'].describe()
+    return Samples_info(date=trade_date, mean_mv=mv['mean'], median_mv=mv['50%'], min_mv=mv['min'], count=mv['count']), \
+           samples
 
 
 impf_build_samples_by_tushare = partial(build_samples,
                                         get_non_st_securities=impf_get_non_st_securities_by_tushare_cache,
                                         get_companies_listed_for_many_years=
-                                            impf_get_companies_listed_for_many_years_by_tushare,
+                                        impf_get_companies_listed_for_many_years_by_tushare,
                                         get_tradable_securities=impf_get_tradable_securities_by_tushare,
                                         exclude_small_market_value_companies=
                                         impf_exclude_small_market_value_companies_by_tushare_cache)
+
+
+def analyse_samples(calculated_samples_info: Samples_info, ts_code: Text) -> Samples_info:
+    average_mv = (calculated_samples_info.average_of_mv * calculated_samples_info.number_of_securities + 10) / (
+                calculated_samples_info.number_of_securities + 1)
+    return Samples_info(date=calculated_samples_info.date,
+                        number_of_securities=calculated_samples_info.number_of_securities + 1)
 
 
 if __name__ == "__main__":
     # 获取构建样本的时间序列（每年4月30日，10月31日或其后的第一个交易日）
     updated_date_iter: Iterator[Text] = filter_updated_date(td.imp_get_trade_cal(start=sample_config().start_date,
                                                                                  end=sample_config().end_date))
-    samples_iter = (impf_build_samples_by_tushare(updated_date) for updated_date in updated_date_iter)
 
+    for updated_date in updated_date_iter:
+        samples_info, data = impf_build_samples_by_tushare(updated_date)
+        print(samples_info)
