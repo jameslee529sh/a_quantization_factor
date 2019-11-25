@@ -1,11 +1,11 @@
 """ 下载tushare提供的股票数据
 """
 from typing import List, Any, Text, NamedTuple, Tuple, Optional, Callable, Dict, Iterator
-from functools import reduce
+from functools import reduce, lru_cache
 import sqlite3
 from collections import namedtuple
-from functools import partial
 import time
+import datetime
 
 import tushare as ts
 import pandas as pd
@@ -34,7 +34,8 @@ def db_config() -> DB_config:
                      tbl_name_history='name_history')
 
 
-def download_list_companies() -> pd.DataFrame:
+@lru_cache(128)
+def download_list_companies(call_date: datetime.datetime = datetime.datetime.now()) -> pd.DataFrame:
     download = lambda status: ts.pro_api(config.tushare_token).\
         stock_basic(exchange='', list_status=status, fields='ts_code, symbol,name,area,industry,list_date, delist_date')
     list_companies = [download(s) for s in ['L', 'D', 'P']]
@@ -64,7 +65,7 @@ def imp_get_extreme_value_in_db(table_name: Text, field_name: Text, code: Text) 
     return trading_date_range
 
 
-def imp_get_records_from_db(sql_str: Text) -> Optional[Iterator[NamedTuple]]:
+def imp_get_records_from_db(sql_str: Text) -> Optional[pd.DataFrame]:
     conn = sqlite3.connect(db_config().db_path)
     c = conn.cursor()
     records = None
@@ -78,12 +79,12 @@ def imp_get_records_from_db(sql_str: Text) -> Optional[Iterator[NamedTuple]]:
     finally:
         c.close()
         conn.close()
-    return db_tuple_to_namedtuple(records, names) if names is not None else None
+    return db_tuples_to_dataframe(records, names) if names is not None else None
 
 
-def db_tuple_to_namedtuple(data: List[Tuple], names: List[Text]) -> Iterator[NamedTuple]:
+def db_tuples_to_dataframe(data: List[Tuple], names: List[Text]) -> pd.DataFrame:
     SQLiteTable = namedtuple('sqlitetable', names)
-    return (SQLiteTable(*d) for d in data)
+    return pd.DataFrame([SQLiteTable(*d) for d in data])
 
 
 def create_gctp_task(code: Text, tbl_name: Text) -> Optional[Tuple]:
@@ -149,7 +150,7 @@ def imp_persist_data(data: List, tbl_name: Text) -> Any:
 
     # Insert list data
     fields_len: int = len(data[0])
-    insert_txt: Text = f'INSERT INTO {tbl_name} VALUES ({"?," * (fields_len - 1) + "?"})'
+    insert_txt: Text = f'INSERT OR IGNORE INTO {tbl_name} VALUES ({"?," * (fields_len - 1) + "?"})'
     c.executemany(insert_txt, data)
 
     # Save (commit) the changes
@@ -189,8 +190,34 @@ def impf_gctp_daily_trade_data(ts_code: Text) -> Optional[Text]:
     return rtn
 
 
-def imp_limit_access(access_per_minute: int, code_set: List, gctp_func: Callable[[Text], Optional[bool]]) -> Any:
+def impf_name_is_in_db(ts_code: Text) -> bool:
+    rtn: bool = False
+    df: pd.DataFrame = imp_get_records_from_db(f"SELECT * FROM name_history WHERE ts_code='{ts_code}'")
+    if df is not None and df.empty is False:
+        rtn = True
+    return rtn
+
+
+def impf_gctp_name_history(ts_code: Text) -> Optional[Text]:
+    rtn: Text = (ts_code, f"股票名称信息没有成功缓存到本地 ")
+
+    df: pd.DataFrame = ts.pro_api(config.tushare_token).namechange(ts_code=ts_code)
+    if df is not None and df.empty is not True:
+        # TODO: 避免重复插入
+        imp_persist_data(list(df.values), db_config().tbl_name_history)
+        rtn = (ts_code, f"股票名称信息缓存到本地数据库的{db_config().tbl_name_history}表格成功")
+
+    return rtn
+
+
+def imp_limit_access(access_per_minute: int,
+                     code_set: List,
+                     gctp_func: Callable[[Text], Optional[bool]],
+                     exists_in_db: Optional[Callable[[Text], bool]] = None) -> Any:
     for code in code_set:
+        if exists_in_db is not None and exists_in_db(code) is True:
+            continue
+
         start = time.time()
         rtn = gctp_func(code)
         end = time.time()
@@ -227,6 +254,13 @@ def imp_create_trade_tables() -> Optional:
         imp_create_sqlite_table(item, query_str)
 
 
+def create_sqlite_table(sample: pd.DataFrame,
+                        tbl_name: Text,
+                        primary_keys: Text) -> Optional[bool]:
+    query_str = reduce(lambda x, y: f"{x}, {y}", sample.columns.to_list()) + f", PRIMARY KEY ({primary_keys})"
+    imp_create_sqlite_table(tbl_name, query_str)
+
+
 def create_db_tables(tbl_name: Text,
                      build_tbl_sql_func: Callable[[Text], Text],
                      create_table_func: Callable[[Text, Text], Any]) -> Any:
@@ -245,6 +279,9 @@ if __name__ == '__main__':
     #                  imp_create_sqlite_table)
     # imp_create_fina_tables()
     # imp_create_trade_tables()
+    create_sqlite_table(ts.pro_api(config.tushare_token).namechange(ts_code='600848.SH'),
+                        tbl_name='name_history',
+                        primary_keys='ts_code, start_date')
     code_list: List = [record[0] for record in list(download_list_companies().values)]
     # imp_limit_access(80, code_set=code_list, gctp_func=partial(gctp2,
     #                                                            tbl_name=db_config().tbl_finance_indicator_statement,
@@ -274,4 +311,5 @@ if __name__ == '__main__':
     #                                                            tbl_name=db_config().tbl_name_history,
     #                                                            getter=imp_get_data_from_tushare,
     #                                                            persistence=imp_persist_data))
-    imp_limit_access(200, code_set=['600018.SH', ], gctp_func=impf_gctp_daily_trade_data)
+    # imp_limit_access(200, code_set=['600018.SH', ], gctp_func=impf_gctp_daily_trade_data)
+    imp_limit_access(78, code_set=code_list, gctp_func=impf_gctp_name_history, exists_in_db=impf_name_is_in_db)

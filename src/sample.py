@@ -5,7 +5,11 @@ from collections import namedtuple
 from functools import partial, lru_cache
 import datetime
 
+import pandas as pd
+import tushare as ts
+
 from src import tushare_data as td
+from src import config
 
 Samples = Iterator[NamedTuple]  # 某一日的样本股集合
 Sample_pool = Iterator[Samples]  # 样本池
@@ -32,17 +36,12 @@ def filter_updated_date(trade_cal_iter: Iterator[Tuple[Text, Text]]) -> Iterator
                 test_updated_date = lambda d: True if is_open == 1 else False
 
 
-def list_on_updated_date(updated_date: Text,
-                         trade_data_func: Callable[[Text], List[Tuple]]) -> Iterator[Text]:
-    return trade_data_func(f"select * from daily_trading_data where trade_date='{updated_date}'")
+def impf_get_tradable_securities(trade_date: Text) -> Samples:
+    return td.imp_get_records_from_db(f"SELECT * FROM daily_trading_data WHERE trade_date='{trade_date}'")
 
 
-def list_is_trading(updated_it: Iterator[Iterator]) -> Iterator[NamedTuple]:
-    return filter(lambda d: d.amount > 1, (d for d in updated_it))
-
-
-def list_can_be_bought(updated_it: Iterator[Iterator]) -> Iterator[NamedTuple]:
-    return filter(lambda d: d.pct_chg < 0.096, (list_it for list_it in updated_it))
+def securities_can_be_bought(sample_it: Samples) -> Samples:
+    return filter(lambda d: d.pct_chg < 0.096, sample_it)
 
 
 def list_is_not_st(updated_it: Samples,
@@ -91,25 +90,61 @@ def market_value_exceeds_low_limit(updated_it: Samples,
                   (list_it for list_it in updated_it))
 
 
+def impf_get_tradable_securities_by_tushare(trade_date: Text) -> pd.Series:
+    df: pd.DataFrame = ts.pro_api(config.tushare_token).daily(trade_date=trade_date)
+    return df[df['pct_chg'] < 9.6]['ts_code']
+
+
+def impf_get_non_st_securities_by_tushare_cache(trade_date: Text) -> pd.Series:
+    df: pd.DataFrame = td.imp_get_records_from_db(f"select * from name_history where start_date <= '{trade_date}' \
+                                                    and (end_date is null or '{trade_date}' <= end_date)")
+    df2 = df[df['name'].apply(lambda c: c.find('ST') < 0)]
+    return df2
+
+
+def impf_get_companies_listed_for_many_years_by_tushare(trade_date: Text) -> pd.Series:
+    def is_over_years(listed_date: Text) -> bool:
+        delta: datetime.timedelta = datetime.datetime.strptime(trade_date, "%Y%m%d") \
+                                    - datetime.datetime.strptime(listed_date, "%Y%m%d")
+        return delta.days > 365 * 2
+
+    def is_still_list(delist_date: Text) -> bool:
+        return delist_date is None or trade_date < delist_date
+
+    df: pd.DataFrame = td.download_list_companies()
+    df2 = df[df['list_date'].map(is_over_years)]
+    df3 = df2[df2['delist_date'].map(is_still_list)]
+    return df3
+
+
+def build_samples(trade_date: Text,
+                  get_non_st_securities: Callable[[Text], pd.Series],
+                  get_companies_listed_for_many_years: Callable[[Text], pd.Series],
+                  get_tradable_securities: Callable[[Text], pd.Series]) -> pd.Series:
+    non_st_securities: pd.Series = get_non_st_securities(trade_date)
+    companies_listed_for_many_years: pd.Series = get_companies_listed_for_many_years(trade_date)
+    tradable_securities: pd.Series = get_tradable_securities(trade_date)
+    return len(non_st_securities), len(companies_listed_for_many_years), len(tradable_securities)
+
+
+impf_build_samples_by_tushare = partial(build_samples,
+                                        get_non_st_securities=impf_get_non_st_securities_by_tushare_cache,
+                                        get_companies_listed_for_many_years= \
+                                            impf_get_companies_listed_for_many_years_by_tushare,
+                                        get_tradable_securities=impf_get_tradable_securities_by_tushare)
+
+
 if __name__ == "__main__":
-    updated_iter: Iterator[Text] = filter_updated_date(td.imp_get_trade_cal(start=sample_config().start_date,
-                                                                            end=sample_config().end_date))
-    list_iter: Iterator[Iterator[NamedTuple]] = map(partial(list_on_updated_date,
-                                                            trade_data_func=td.imp_get_records_from_db),
-                                                    updated_iter)
-    list_is_trading_it: Iterator[Iterator[NamedTuple]] = map(list_is_trading, list_iter)
-    list_can_be_bought_it: Iterator[Iterator[NamedTuple]] = map(list_can_be_bought, list_is_trading_it)
+    # 获取构建样本的时间序列（每年4月30日，10月31日或其后的第一个交易日）
+    updated_date_iter: Iterator[Text] = filter_updated_date(td.imp_get_trade_cal(start=sample_config().start_date,
+                                                                                 end=sample_config().end_date))
+    for updated_date in updated_date_iter:
 
-    list_is_not_st_it: Sample_pool = map(partial(list_is_not_st, name_history_func=td.imp_get_records_from_db),
-                                         list_can_be_bought_it)
+        print(updated_date)
+        temp = impf_build_samples_by_tushare(updated_date)
+        print(temp)
 
-    list_is_over_years_it: Sample_pool = map(partial(list_is_over_years, name_history_func=td.imp_get_records_from_db),
-                                             list_is_not_st_it)
-    market_value_exceeds_low_limit_it: Sample_pool = map(partial(market_value_exceeds_low_limit,
-                                                                 index_daily_basic_func=
-                                                                 td.imp_get_index_daily_basic_from_tushare,
-                                                                 stock_daily_basic_func=td.imp_get_records_from_db),
-                                                         list_is_over_years_it)
-    for updated_samples in market_value_exceeds_low_limit_it:
-        for sample in updated_samples:
-            print(sample)
+        # TODO: 非ST公司
+        # TODO: 上市已经满2年
+        # TODO: 市值超过沪深300成分股公司均值的1/20以上
+
