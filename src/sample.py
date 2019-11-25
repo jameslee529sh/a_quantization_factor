@@ -117,21 +117,36 @@ def impf_get_companies_listed_for_many_years_by_tushare(trade_date: Text) -> pd.
     return df3
 
 
+def impf_exclude_small_market_value_companies_by_tushare_cache(trade_date: Text) -> pd.Series:
+    # index_market_value: float = td.imp_get_records_from_db(f"SELECT total_mv FROM securities_index \
+    #                                                         WHERE ts_code='399300.SZ' and trade_date='{trade_date}'")
+    index_market_value: float = ts.pro_api(config.tushare_token).index_dailybasic(trade_date=trade_date,
+                                                                                  ts_code='399300.SZ').iloc[0]['total_mv']
+    df: pd.DataFrame = td.imp_get_records_from_db(f"SELECT * FROM daily_basic WHERE trade_date='{trade_date}'")
+    low_limit: float = index_market_value / (300 * 50 * 10000)
+    return df[df['total_mv'] >= low_limit] #(index_market_value / (300*20*10000))]
+
+
 def build_samples(trade_date: Text,
                   get_non_st_securities: Callable[[Text], pd.Series],
                   get_companies_listed_for_many_years: Callable[[Text], pd.Series],
-                  get_tradable_securities: Callable[[Text], pd.Series]) -> pd.Series:
+                  get_tradable_securities: Callable[[Text], pd.Series],
+                  exclude_small_market_value_companies: Callable[[Text], pd.Series]) -> pd.Series:
     non_st_securities: pd.Series = get_non_st_securities(trade_date)
     companies_listed_for_many_years: pd.Series = get_companies_listed_for_many_years(trade_date)
     tradable_securities: pd.Series = get_tradable_securities(trade_date)
-    return len(non_st_securities), len(companies_listed_for_many_years), len(tradable_securities)
+    normal_market_value_companies = exclude_small_market_value_companies(trade_date)
+    return len(non_st_securities), len(companies_listed_for_many_years), \
+           len(tradable_securities), len(normal_market_value_companies)
 
 
 impf_build_samples_by_tushare = partial(build_samples,
                                         get_non_st_securities=impf_get_non_st_securities_by_tushare_cache,
-                                        get_companies_listed_for_many_years= \
+                                        get_companies_listed_for_many_years=
                                             impf_get_companies_listed_for_many_years_by_tushare,
-                                        get_tradable_securities=impf_get_tradable_securities_by_tushare)
+                                        get_tradable_securities=impf_get_tradable_securities_by_tushare,
+                                        exclude_small_market_value_companies=
+                                        impf_exclude_small_market_value_companies_by_tushare_cache)
 
 
 if __name__ == "__main__":
