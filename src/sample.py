@@ -158,13 +158,6 @@ impf_build_samples_by_tushare = partial(build_samples,
                                         impf_exclude_small_market_value_companies_by_tushare_cache)
 
 
-def analyse_samples(calculated_samples_info: Samples_info, ts_code: Text) -> Samples_info:
-    average_mv = (calculated_samples_info.average_of_mv * calculated_samples_info.number_of_securities + 10) / (
-                calculated_samples_info.number_of_securities + 1)
-    return Samples_info(date=calculated_samples_info.date,
-                        number_of_securities=calculated_samples_info.number_of_securities + 1)
-
-
 if __name__ == "__main__":
     # 获取构建样本的时间序列（每年4月30日，10月31日或其后的第一个交易日）
     updated_date_iter: Iterator[Text] = filter_updated_date(td.imp_get_trade_cal(start=sample_config().start_date,
